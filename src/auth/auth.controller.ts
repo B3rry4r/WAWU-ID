@@ -6,8 +6,11 @@ import {
   Post,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { ActivateDto } from './dto/activate.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { OtpStartDto } from './dto/otp-start.dto';
+import { OtpVerifyDto } from './dto/otp-verify.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -32,6 +35,24 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async refresh(@Body() dto: RefreshDto) {
     return { data: await this.auth.refresh(dto.refreshToken) };
+  }
+
+  @Post('otp/start')
+  @HttpCode(HttpStatus.OK)
+  async otpStart(@Body() dto: OtpStartDto) {
+    return { data: await this.auth.otpStart(dto.phone) };
+  }
+
+  @Post('otp/verify')
+  @HttpCode(HttpStatus.OK)
+  async otpVerify(@Body() dto: OtpVerifyDto) {
+    return { data: await this.auth.otpVerify(dto.phone, dto.code) };
+  }
+
+  @Post('activate')
+  @HttpCode(HttpStatus.OK)
+  async activate(@Body() dto: ActivateDto) {
+    return { data: await this.auth.activate(dto) };
   }
 
   @Post('forgot-password')

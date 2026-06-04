@@ -13,10 +13,10 @@ type ExpiresIn = NonNullable<SignOptions['expiresIn']>;
 /** Access-token payload — authoritative shape from Brief Section 2. */
 export interface AccessTokenPayload {
   sub: string;
-  email: string;
+  email: string | null;
   phone: string;
-  firstName: string;
-  lastName: string;
+  firstName: string | null;
+  lastName: string | null;
   country: string | null;
   verificationTier: string;
   trustScore: number;
@@ -91,6 +91,28 @@ export class TokensService {
     });
 
     return { accessToken, refreshToken };
+  }
+
+  /** Mint a one-time activation token (used by Phase 4 provisioning). */
+  async signActivationToken(userId: string): Promise<string> {
+    return this.jwt.signAsync(
+      { sub: userId, type: 'activation' },
+      { algorithm: 'RS256', expiresIn: '7d' as ExpiresIn },
+    );
+  }
+
+  /** Verify an activation token and return the user id it was issued for. */
+  async verifyActivationToken(token: string): Promise<string> {
+    let payload: { sub: string; type?: string };
+    try {
+      payload = await this.jwt.verifyAsync(token, { algorithms: ['RS256'] });
+    } catch {
+      throw new UnauthorizedException('Invalid or expired activation token');
+    }
+    if (payload.type !== 'activation') {
+      throw new UnauthorizedException('Invalid or expired activation token');
+    }
+    return payload.sub;
   }
 
   /**

@@ -26,10 +26,11 @@ enum UserStatus {
 
 model WawuUser {
   id               String           @id @default(uuid()) @db.Uuid
-  email            String           @unique
+  // Nullable: phone-OTP-first signups (e.g. WAWUBasket flow) have no email/name yet.
+  email            String?          @unique
   phone            String           @unique
-  firstName        String           @map("first_name")
-  lastName         String           @map("last_name")
+  firstName        String?          @map("first_name")
+  lastName         String?          @map("last_name")
   country          String?
   state            String?
   // Nullable: OTP-only and Category B (onboarding-only) users have no password yet.
@@ -76,4 +77,15 @@ model PasswordResetToken {
 
   @@index([userId])
   @@map("password_reset_tokens")
+}
+
+model OtpSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  phone     String
+  codeHash  String   @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([phone])
+  @@map("otp_sessions")
 }

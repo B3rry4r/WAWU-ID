@@ -1,12 +1,17 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomBytes } from 'crypto';
+import { MailService } from '../mail/mail.service';
+import { OtpService } from '../otp/otp.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ActivateDto } from './dto/activate.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -15,7 +20,7 @@ import { TokenPair, TokensService } from './tokens.service';
 export interface UserResponse {
   id: string;
   fullName: string;
-  email: string;
+  email: string | null;
   phone: string;
   country: string | null;
   state: string | null;
@@ -32,6 +37,9 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokens: TokensService,
+    private readonly otp: OtpService,
+    private readonly mail: MailService,
+    private readonly config: ConfigService,
   ) {}
 
   // ── helpers ────────────────────────────────────────────────────────────────
@@ -48,7 +56,7 @@ export class AuthService {
   ): UserResponse {
     return {
       id: user.id,
-      fullName: `${user.firstName} ${user.lastName}`.trim(),
+      fullName: [user.firstName, user.lastName].filter(Boolean).join(' '),
       email: user.email,
       phone: user.phone,
       country: user.country,
@@ -60,7 +68,7 @@ export class AuthService {
     };
   }
 
-  // ── endpoints ────────────────────────────────────────────────────────────────
+  // ── email + password ────────────────────────────────────────────────────────
 
   async register(
     dto: RegisterDto,
@@ -116,10 +124,42 @@ export class AuthService {
     return this.tokens.rotateRefreshToken(refreshToken);
   }
 
-  /**
-   * Always responds the same way to avoid leaking which emails exist.
-   * Email delivery of the reset link is Phase 4 — here we only mint + store it.
-   */
+  // ── OTP (phone) ───────────────────────────────────────────────────────────────
+
+  async otpStart(phone: string): Promise<{ message: string; expiresIn: number }> {
+    await this.otp.generateAndSend(phone);
+    return { message: 'OTP sent', expiresIn: 300 };
+  }
+
+  async otpVerify(
+    phone: string,
+    code: string,
+  ): Promise<TokenPair & { user: UserResponse }> {
+    const ok = await this.otp.verify(phone, code);
+    if (!ok) {
+      throw new UnauthorizedException('Invalid or expired OTP');
+    }
+
+    // Find or create a phone-only user (e.g. WAWUBasket-style signup).
+    let user = await this.prisma.wawuUser.findUnique({ where: { phone } });
+    if (!user) {
+      user = await this.prisma.wawuUser.create({
+        data: {
+          phone,
+          verificationTier: 'basic',
+          trustScore: 0,
+          status: 'active',
+        },
+      });
+    }
+
+    const pair = await this.tokens.issueTokens(user);
+    return { ...pair, user: this.toUserResponse(user) };
+  }
+
+  // ── password reset + activation ────────────────────────────────────────────
+
+  /** Always responds the same way to avoid leaking which emails exist. */
   async forgotPassword(email: string): Promise<{ message: string }> {
     const normalized = email.toLowerCase().trim();
     const user = await this.prisma.wawuUser.findUnique({
@@ -135,7 +175,10 @@ export class AuthService {
           expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
         },
       });
-      // Phase 4: email `rawToken` to the user as a reset link.
+
+      const appUrl = this.config.get<string>('APP_URL') ?? '';
+      const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}&email=${encodeURIComponent(normalized)}`;
+      await this.mail.sendPasswordReset(normalized, resetUrl);
     }
 
     return { message: 'Reset link sent if account exists' };
@@ -173,5 +216,25 @@ export class AuthService {
     ]);
 
     return { message: 'Password reset successfully' };
+  }
+
+  /** One-time activation for Category B users: set a password via emailed token. */
+  async activate(dto: ActivateDto): Promise<TokenPair & { user: UserResponse }> {
+    const userId = await this.tokens.verifyActivationToken(dto.activationToken);
+    const user = await this.prisma.wawuUser.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new UnauthorizedException('Invalid or expired activation token');
+    }
+    if (user.passwordHash) {
+      throw new BadRequestException('Account already activated');
+    }
+
+    const updated = await this.prisma.wawuUser.update({
+      where: { id: user.id },
+      data: { passwordHash: await argon2.hash(dto.password) },
+    });
+
+    const pair = await this.tokens.issueTokens(updated);
+    return { ...pair, user: this.toUserResponse(updated) };
   }
 }
