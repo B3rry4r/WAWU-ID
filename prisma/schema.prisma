@@ -1,0 +1,65 @@
+// WAWU ID — Prisma schema
+// Unified identity + auth service for the WAWUAfrica ecosystem.
+// wawu_users schema derived from the Master Build Brief, Section 2.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum VerificationTier {
+  basic
+  verified_user
+  verified_business
+  certified_professional
+  trusted_partner
+}
+
+enum UserStatus {
+  active
+  suspended
+  banned
+}
+
+model WawuUser {
+  id               String           @id @default(uuid()) @db.Uuid
+  email            String           @unique
+  phone            String           @unique
+  firstName        String           @map("first_name")
+  lastName         String           @map("last_name")
+  country          String?
+  state            String?
+  // Nullable: OTP-only and Category B (onboarding-only) users have no password yet.
+  passwordHash     String?          @map("password_hash")
+  verificationTier VerificationTier @default(basic) @map("verification_tier")
+  trustScore       Int              @default(0) @map("trust_score")
+  status           UserStatus       @default(active)
+
+  // Cross-platform reference links (see Brief Section 2)
+  onboardingRef       String? @map("onboarding_ref") @db.Uuid // -> onboarding_submissions.uuid
+  wawuafricaAppUserId Int?    @map("wawuafrica_app_user_id") // -> WAWUAfrica users.id
+  beautyUserId        Int?    @map("beauty_user_id") // -> WAWUBeauty users.id
+  basketUserId        String? @map("basket_user_id") @db.Uuid // -> WAWUBasket users.id
+
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  refreshTokens RefreshToken[]
+
+  @@map("wawu_users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
