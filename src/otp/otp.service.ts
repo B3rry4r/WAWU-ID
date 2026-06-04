@@ -22,21 +22,32 @@ export class OtpService {
 
   /** Generate a 6-digit code, persist its hash, and send it via Termii SMS. */
   async generateAndSend(phone: string): Promise<void> {
+    // Testing bypass: when OTP_BYPASS_CODE is set, skip Termii and store that
+    // fixed code as the OTP for any phone. Remove the env var to re-enable SMS.
+    const bypassCode = this.config.get<string>('OTP_BYPASS_CODE');
+    if (bypassCode) {
+      this.logger.warn('OTP bypass active — not for production');
+      await this.storeSession(phone, bypassCode);
+      return;
+    }
+
     // Fail before any DB write if the SMS provider isn't configured.
     if (!this.config.get<string>('TERMII_API_KEY')) {
       throw new InternalServerErrorException('SMS provider is not configured');
     }
 
     const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
-    const codeHash = await argon2.hash(code);
+    await this.storeSession(phone, code);
+    await this.sendSms(phone, code);
+  }
 
-    // Only one active OTP per phone at a time.
+  /** Persist the hashed code, replacing any existing OTP for the phone. */
+  private async storeSession(phone: string, code: string): Promise<void> {
+    const codeHash = await argon2.hash(code);
     await this.prisma.otpSession.deleteMany({ where: { phone } });
     await this.prisma.otpSession.create({
       data: { phone, codeHash, expiresAt: new Date(Date.now() + OTP_TTL_MS) },
     });
-
-    await this.sendSms(phone, code);
   }
 
   private async sendSms(phone: string, code: string): Promise<void> {
@@ -52,7 +63,7 @@ export class OtpService {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: phone,
-          from: 'WAWUAfrica',
+          from: this.config.get<string>('TERMII_SENDER_ID') ?? 'WAWUAfrica',
           sms: `Your WAWUAfrica code is ${code}. Expires in 5 minutes.`,
           type: 'plain',
           channel: 'generic',
