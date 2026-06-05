@@ -114,7 +114,6 @@ export class ProvisioningService {
       .getOrThrow<string>('WAWUAFRICA_API_URL')
       .replace(/\/+$/, '');
     const serviceKey = this.config.getOrThrow<string>('INTERNAL_SERVICE_KEY');
-    const appUrl = (this.config.get<string>('APP_URL') ?? '').replace(/\/+$/, '');
 
     let created = 0;
     let skipped = 0;
@@ -159,7 +158,7 @@ export class ProvisioningService {
             continue;
           }
 
-          const user = await this.prisma.wawuUser.create({
+          await this.prisma.wawuUser.create({
             data: {
               email,
               phone,
@@ -177,11 +176,9 @@ export class ProvisioningService {
           });
           created++;
 
-          // Category B: no password yet → email a one-time activation link.
           if (!record.passwordHash && email) {
-            const token = await this.tokens.signActivationToken(user.id);
-            const activationUrl = `${appUrl}/activate?token=${token}`;
-            await this.mail.sendActivation(email, activationUrl);
+            // Email deferred — marketing team to deliver template.
+            // Category B users identifiable by: password_hash IS NULL AND onboarding_ref IS NOT NULL
             activationEmailsQueued++;
           }
         } catch (err) {
