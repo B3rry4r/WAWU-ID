@@ -27,7 +27,15 @@ interface ExportResponse {
 export interface ProvisioningResult {
   created: number;
   skipped: number;
-  emailsQueued: number;
+  activationEmailsQueued: number;
+}
+
+export interface ProvisioningStatus {
+  status: 'idle' | 'running' | 'completed' | 'failed';
+  startedAt: string | null;
+  finishedAt: string | null;
+  result: ProvisioningResult | null;
+  error: string | null;
 }
 
 @Injectable()
@@ -35,12 +43,67 @@ export class ProvisioningService {
   private readonly logger = new Logger(ProvisioningService.name);
   private static readonly PER_PAGE = 500;
 
+  private state: ProvisioningStatus = {
+    status: 'idle',
+    startedAt: null,
+    finishedAt: null,
+    result: null,
+    error: null,
+  };
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
     private readonly tokens: TokensService,
     private readonly config: ConfigService,
   ) {}
+
+  /**
+   * Kick off provisioning in the background and return immediately. A second
+   * call while a job is running is a no-op (returns the in-flight status).
+   */
+  start(): ProvisioningStatus {
+    if (this.state.status === 'running') {
+      return this.state;
+    }
+
+    const startedAt = new Date().toISOString();
+    this.state = {
+      status: 'running',
+      startedAt,
+      finishedAt: null,
+      result: null,
+      error: null,
+    };
+
+    void this.runProvisioning()
+      .then((result) => {
+        this.state = {
+          status: 'completed',
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          result,
+          error: null,
+        };
+      })
+      .catch((err: unknown) => {
+        this.logger.error(`Provisioning job failed: ${String(err)}`);
+        this.state = {
+          status: 'failed',
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          result: null,
+          error: String(err),
+        };
+      });
+
+    return this.state;
+  }
+
+  /** Last (or in-flight) provisioning job status. */
+  getStatus(): ProvisioningStatus {
+    return this.state;
+  }
 
   /**
    * Pull the deduplicated export from WAWUAfrica and upsert-safely create
@@ -55,7 +118,7 @@ export class ProvisioningService {
 
     let created = 0;
     let skipped = 0;
-    let emailsQueued = 0;
+    let activationEmailsQueued = 0;
     let errors = 0;
     let page = 1;
 
@@ -117,9 +180,9 @@ export class ProvisioningService {
           // Category B: no password yet → email a one-time activation link.
           if (!record.passwordHash && email) {
             const token = await this.tokens.signActivationToken(user.id);
-            const activationUrl = `${appUrl}/auth/activate?token=${token}`;
+            const activationUrl = `${appUrl}/activate?token=${token}`;
             await this.mail.sendActivation(email, activationUrl);
-            emailsQueued++;
+            activationEmailsQueued++;
           }
         } catch (err) {
           errors++;
@@ -130,7 +193,7 @@ export class ProvisioningService {
       }
 
       this.logger.log(
-        `Page ${page}: created=${created} skipped=${skipped} emailsQueued=${emailsQueued} errors=${errors}`,
+        `Page ${page}: created=${created} skipped=${skipped} activationEmailsQueued=${activationEmailsQueued} errors=${errors}`,
       );
 
       const next = body.pagination?.nextPage ?? null;
@@ -141,9 +204,9 @@ export class ProvisioningService {
     }
 
     this.logger.log(
-      `Provisioning complete: created=${created} skipped=${skipped} emailsQueued=${emailsQueued} errors=${errors}`,
+      `Provisioning complete: created=${created} skipped=${skipped} activationEmailsQueued=${activationEmailsQueued} errors=${errors}`,
     );
 
-    return { created, skipped, emailsQueued };
+    return { created, skipped, activationEmailsQueued };
   }
 }

@@ -93,23 +93,23 @@ export class TokensService {
     return { accessToken, refreshToken };
   }
 
-  /** Mint a one-time activation token (used by Phase 4 provisioning). */
+  /** Mint a one-time activation token (used by provisioning for Category B). */
   async signActivationToken(userId: string): Promise<string> {
     return this.jwt.signAsync(
-      { sub: userId, type: 'activation' },
-      { algorithm: 'RS256', expiresIn: '7d' as ExpiresIn },
+      { sub: userId, purpose: 'activate' },
+      { algorithm: 'RS256', expiresIn: '72h' as ExpiresIn },
     );
   }
 
   /** Verify an activation token and return the user id it was issued for. */
   async verifyActivationToken(token: string): Promise<string> {
-    let payload: { sub: string; type?: string };
+    let payload: { sub: string; purpose?: string };
     try {
       payload = await this.jwt.verifyAsync(token, { algorithms: ['RS256'] });
     } catch {
       throw new UnauthorizedException('Invalid or expired activation token');
     }
-    if (payload.type !== 'activation') {
+    if (payload.purpose !== 'activate') {
       throw new UnauthorizedException('Invalid or expired activation token');
     }
     return payload.sub;
