@@ -172,8 +172,11 @@ export class AuthService {
 
   // ── password reset + activation ────────────────────────────────────────────
 
-  /** Always responds the same way to avoid leaking which emails exist. */
-  async forgotPassword(identifier: string): Promise<{ message: string }> {
+  /** Always responds the same way to avoid leaking which accounts exist. */
+  async forgotPassword(
+    identifier: string,
+    method: 'sms' | 'email' = 'sms',
+  ): Promise<{ message: string }> {
     const user = await this.prisma.wawuUser.findFirst({
       where: {
         OR: [
@@ -183,27 +186,91 @@ export class AuthService {
       },
     });
 
-    // Reset links are emailed, so a deliverable email address is required.
-    if (user?.email) {
-      const rawToken = randomBytes(32).toString('hex');
-      await this.prisma.passwordResetToken.create({
-        data: {
-          userId: user.id,
-          tokenHash: await argon2.hash(rawToken),
-          expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
-        },
-      });
+    if (user) {
+      if (method === 'email' && user.email) {
+        // Web hub: email a one-time reset link via Resend.
+        const rawToken = randomBytes(32).toString('hex');
+        await this.prisma.passwordResetToken.create({
+          data: {
+            userId: user.id,
+            tokenHash: await argon2.hash(rawToken),
+            expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+          },
+        });
 
-      const appUrl = this.config.get<string>('APP_URL') ?? '';
-      const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
-      await this.mail.sendPasswordReset(user.email, resetUrl);
+        const appUrl = this.config.get<string>('APP_URL') ?? '';
+        const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
+        await this.mail.sendPasswordReset(user.email, resetUrl);
+      } else if (user.phone) {
+        // Mobile apps: send a 6-digit reset code over SMS via Termii.
+        await this.otp.generateAndSend(user.phone);
+      }
     }
 
-    return { message: 'Reset link sent if account exists' };
+    return { message: 'If an account exists, a reset code has been sent.' };
   }
 
-  async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
-    const email = dto.email.toLowerCase().trim();
+  /**
+   * Resets a password via one of two paths:
+   *   • SMS-code (mobile)  → { identifier, code, newPassword } — returns a
+   *     fresh session so the device is signed straight in.
+   *   • Email-link (web)   → { token, email, password } — returns a message;
+   *     the web app then redirects to the login screen.
+   */
+  async resetPassword(
+    dto: ResetPasswordDto,
+  ): Promise<{ message: string } | (TokenPair & { user: UserResponse })> {
+    if (dto.identifier && dto.code && dto.newPassword) {
+      return this.resetPasswordBySms(dto.identifier, dto.code, dto.newPassword);
+    }
+    if (dto.token && dto.email && dto.password) {
+      return this.resetPasswordByToken(dto.token, dto.email, dto.password);
+    }
+    throw new BadRequestException(
+      'Provide either { identifier, code, newPassword } or { token, email, password }',
+    );
+  }
+
+  private async resetPasswordBySms(
+    identifier: string,
+    code: string,
+    newPassword: string,
+  ): Promise<TokenPair & { user: UserResponse }> {
+    const user = await this.prisma.wawuUser.findFirst({
+      where: {
+        OR: [
+          { email: identifier.toLowerCase().trim() },
+          { phone: identifier.trim() },
+        ],
+      },
+    });
+    // Same error whether the user or the code is wrong — never leak existence.
+    if (!user) {
+      throw new UnauthorizedException('Invalid or expired reset code');
+    }
+
+    const ok = await this.otp.verify(user.phone, code);
+    if (!ok) {
+      throw new UnauthorizedException('Invalid or expired reset code');
+    }
+
+    const updated = await this.prisma.wawuUser.update({
+      where: { id: user.id },
+      data: { passwordHash: await argon2.hash(newPassword) },
+    });
+    // Invalidate every other active session for this user.
+    await this.prisma.refreshToken.deleteMany({ where: { userId: user.id } });
+
+    const pair = await this.tokens.issueTokens(updated);
+    return { ...pair, user: this.toUserResponse(updated) };
+  }
+
+  private async resetPasswordByToken(
+    token: string,
+    rawEmail: string,
+    password: string,
+  ): Promise<{ message: string }> {
+    const email = rawEmail.toLowerCase().trim();
     const user = await this.prisma.wawuUser.findUnique({ where: { email } });
     if (!user) {
       throw new UnauthorizedException('Invalid or expired reset token');
@@ -214,7 +281,7 @@ export class AuthService {
     });
     let matched: (typeof records)[number] | undefined;
     for (const record of records) {
-      if (await argon2.verify(record.tokenHash, dto.token)) {
+      if (await argon2.verify(record.tokenHash, token)) {
         matched = record;
         break;
       }
@@ -226,7 +293,7 @@ export class AuthService {
     await this.prisma.$transaction([
       this.prisma.wawuUser.update({
         where: { id: user.id },
-        data: { passwordHash: await argon2.hash(dto.password) },
+        data: { passwordHash: await argon2.hash(password) },
       }),
       // Invalidate all reset tokens and active sessions for this user.
       this.prisma.passwordResetToken.deleteMany({ where: { userId: user.id } }),
