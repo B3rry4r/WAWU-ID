@@ -1,6 +1,7 @@
-import { IsEmail } from 'class-validator';
+import { IsString, MinLength } from 'class-validator';
 
 export class ForgotPasswordDto {
-  @IsEmail()
-  email!: string;
+  @IsString()
+  @MinLength(1)
+  identifier!: string; // accepts email OR phone number
 }

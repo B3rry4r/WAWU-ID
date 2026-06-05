@@ -105,10 +105,23 @@ export class AuthService {
   }
 
   async login(dto: LoginDto): Promise<TokenPair & { user: UserResponse }> {
-    const email = dto.email.toLowerCase().trim();
-    const user = await this.prisma.wawuUser.findUnique({ where: { email } });
+    const user = await this.prisma.wawuUser.findFirst({
+      where: {
+        OR: [
+          { email: dto.identifier.toLowerCase().trim() },
+          { phone: dto.identifier.trim() },
+        ],
+      },
+    });
 
-    if (!user || !user.passwordHash) {
+    if (!user) {
+      throw new UnauthorizedException({
+        statusCode: 404,
+        code: 'USER_NOT_IN_WAWUID',
+        message: 'No account found with this email or phone number.',
+      });
+    }
+    if (!user.passwordHash) {
       throw new UnauthorizedException('Invalid credentials');
     }
     const valid = await argon2.verify(user.passwordHash, dto.password);
@@ -160,13 +173,18 @@ export class AuthService {
   // ── password reset + activation ────────────────────────────────────────────
 
   /** Always responds the same way to avoid leaking which emails exist. */
-  async forgotPassword(email: string): Promise<{ message: string }> {
-    const normalized = email.toLowerCase().trim();
-    const user = await this.prisma.wawuUser.findUnique({
-      where: { email: normalized },
+  async forgotPassword(identifier: string): Promise<{ message: string }> {
+    const user = await this.prisma.wawuUser.findFirst({
+      where: {
+        OR: [
+          { email: identifier.toLowerCase().trim() },
+          { phone: identifier.trim() },
+        ],
+      },
     });
 
-    if (user) {
+    // Reset links are emailed, so a deliverable email address is required.
+    if (user?.email) {
       const rawToken = randomBytes(32).toString('hex');
       await this.prisma.passwordResetToken.create({
         data: {
@@ -177,8 +195,8 @@ export class AuthService {
       });
 
       const appUrl = this.config.get<string>('APP_URL') ?? '';
-      const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}&email=${encodeURIComponent(normalized)}`;
-      await this.mail.sendPasswordReset(normalized, resetUrl);
+      const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
+      await this.mail.sendPasswordReset(user.email, resetUrl);
     }
 
     return { message: 'Reset link sent if account exists' };

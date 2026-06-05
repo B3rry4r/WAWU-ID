@@ -9,7 +9,9 @@ import {
 import { Response } from 'express';
 
 /**
- * Formats every error as the contract's error envelope: { statusCode, message }.
+ * Formats every error as the contract's error envelope: { statusCode, message },
+ * carrying an optional machine-readable `code` and honouring a body-provided
+ * statusCode (lets a handler signal e.g. 404 from inside an HttpException body).
  */
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -20,6 +22,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     let statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Internal server error';
+    let code: string | undefined;
 
     if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
@@ -27,13 +30,27 @@ export class HttpExceptionFilter implements ExceptionFilter {
       if (typeof body === 'string') {
         message = body;
       } else if (typeof body === 'object' && body !== null) {
-        const m = (body as { message?: string | string[] }).message;
-        message = Array.isArray(m) ? m.join(', ') : (m ?? exception.message);
+        const b = body as {
+          statusCode?: number;
+          message?: string | string[];
+          code?: string;
+        };
+        if (typeof b.statusCode === 'number') {
+          statusCode = b.statusCode;
+        }
+        message = Array.isArray(b.message)
+          ? b.message.join(', ')
+          : (b.message ?? exception.message);
+        if (typeof b.code === 'string') {
+          code = b.code;
+        }
       }
     } else {
       this.logger.error(exception);
     }
 
-    response.status(statusCode).json({ statusCode, message });
+    response
+      .status(statusCode)
+      .json(code ? { statusCode, code, message } : { statusCode, message });
   }
 }
