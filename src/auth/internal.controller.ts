@@ -2,11 +2,13 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Headers,
   HttpCode,
   HttpStatus,
   Param,
   Patch,
+  Query,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -47,6 +49,32 @@ export class InternalController {
       );
     }
     return { data: await this.auth.updateVerificationTier(userId, tier) };
+  }
+
+  /**
+   * DELETE /internal/users/:userId
+   * Query: ?mode=hard (default) | anonymize
+   * Same X-Service-Key guard as the tier setter. Hard-deletes the user (related
+   * tokens cascade) or anonymizes the row (scrub PII + ban + revoke sessions).
+   * Used by WAWUAfrica-API ops tooling to purge residual/test accounts.
+   */
+  @Delete('users/:userId')
+  @HttpCode(HttpStatus.OK)
+  async deleteUser(
+    @Param('userId') userId: string,
+    @Query('mode') mode?: string,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    if (mode && mode !== 'hard' && mode !== 'anonymize') {
+      throw new BadRequestException("mode must be 'hard' or 'anonymize'");
+    }
+    return {
+      data: await this.auth.deleteUser(
+        userId,
+        (mode as 'hard' | 'anonymize') ?? 'hard',
+      ),
+    };
   }
 
   private assertServiceKey(provided?: string): void {

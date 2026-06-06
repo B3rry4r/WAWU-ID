@@ -116,6 +116,10 @@ export class AuthService {
     });
 
     if (!user) {
+      // Intentional, by-design identifier-existence signal (404 +
+      // USER_NOT_IN_WAWUID) vs. the generic 401 for a wrong password below.
+      // Clients (WAWUAfrica-API et al.) branch on USER_NOT_IN_WAWUID to drive
+      // their signup/redirect flows, so this distinction must be preserved.
       throw new UnauthorizedException({
         statusCode: 404,
         code: 'USER_NOT_IN_WAWUID',
@@ -175,6 +179,55 @@ export class AuthService {
     });
 
     return this.toUserResponse(updated);
+  }
+
+  /**
+   * Internal (X-Service-Key gated) account removal. Used to purge residual
+   * or test accounts on request from WAWUAfrica-API ops tooling.
+   *
+   * Two modes:
+   *   • hard delete (default) — removes the row entirely; related refresh and
+   *     reset tokens cascade away via the schema's onDelete: Cascade.
+   *   • anonymize — keeps the row (preserves cross-platform reference links and
+   *     foreign-key integrity) but scrubs PII, marks the account `banned`, and
+   *     revokes all sessions/reset tokens.
+   */
+  async deleteUser(
+    userId: string,
+    mode: 'hard' | 'anonymize' = 'hard',
+  ): Promise<{ id: string; status: string; deleted: boolean }> {
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (mode === 'anonymize') {
+      const scrubbed = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.wawuUser.update({
+          where: { id: userId },
+          data: {
+            email: null,
+            phone: `deleted:${userId}`,
+            firstName: null,
+            lastName: null,
+            country: null,
+            state: null,
+            passwordHash: null,
+            status: 'banned',
+          },
+        });
+        await tx.refreshToken.deleteMany({ where: { userId } });
+        await tx.passwordResetToken.deleteMany({ where: { userId } });
+        return updated;
+      });
+      return { id: scrubbed.id, status: scrubbed.status, deleted: false };
+    }
+
+    // Hard delete — refresh/reset tokens cascade via the schema relations.
+    await this.prisma.wawuUser.delete({ where: { id: userId } });
+    return { id: userId, status: 'deleted', deleted: true };
   }
 
   // ── OTP (phone) ───────────────────────────────────────────────────────────────

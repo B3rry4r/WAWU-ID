@@ -18,14 +18,30 @@ export class OtpService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-  ) {}
+  ) {
+    // Hard fail-fast: the OTP testing bypass must never be reachable in
+    // production. If the env var is present at startup in a prod deployment,
+    // refuse to boot rather than silently shipping an auth bypass.
+    if (this.isProduction() && this.config.get<string>('OTP_BYPASS_CODE')) {
+      throw new InternalServerErrorException(
+        'OTP_BYPASS_CODE must not be set when NODE_ENV=production',
+      );
+    }
+  }
+
+  private isProduction(): boolean {
+    return this.config.get<string>('NODE_ENV') === 'production';
+  }
 
   /** Generate a 6-digit code, persist its hash, and send it via Termii SMS. */
   async generateAndSend(phone: string): Promise<void> {
     // Testing bypass: when OTP_BYPASS_CODE is set, skip Termii and store that
     // fixed code as the OTP for any phone. Remove the env var to re-enable SMS.
+    // Hard-guarded: the bypass is ALWAYS ignored in production, even if the
+    // env var is somehow present (constructor also refuses to boot in that
+    // case). Dev/test behaviour is unchanged.
     const bypassCode = this.config.get<string>('OTP_BYPASS_CODE');
-    if (bypassCode) {
+    if (bypassCode && !this.isProduction()) {
       this.logger.warn('OTP bypass active — not for production');
       await this.storeSession(phone, bypassCode);
       return;
