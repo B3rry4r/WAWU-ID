@@ -16,6 +16,7 @@ enum VerificationTier {
   verified_business
   certified_professional
   trusted_partner
+  official
 }
 
 enum UserStatus {

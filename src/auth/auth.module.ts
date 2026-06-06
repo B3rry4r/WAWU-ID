@@ -7,6 +7,7 @@ import { MailModule } from '../mail/mail.module';
 import { OtpModule } from '../otp/otp.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { InternalController } from './internal.controller';
 import { TokensService } from './tokens.service';
 
 @Module({
@@ -25,7 +26,7 @@ import { TokensService } from './tokens.service';
       }),
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, InternalController],
   providers: [AuthService, TokensService],
   exports: [TokensService],
 })

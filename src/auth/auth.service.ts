@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -135,6 +136,45 @@ export class AuthService {
 
   async refresh(refreshToken: string): Promise<TokenPair> {
     return this.tokens.rotateRefreshToken(refreshToken);
+  }
+
+  // ── internal: tier management (X-Service-Key gated) ─────────────────────────
+
+  /**
+   * Stamp a user's verification tier (admin/partner provisioning path).
+   * Only ever ELEVATES to a trusted tier — this path can never downgrade an
+   * account to `basic` (or any non-trusted tier). Takes effect on the next
+   * token refresh; already-issued JWTs keep their old tier until then.
+   */
+  async updateVerificationTier(
+    userId: string,
+    tier: string,
+  ): Promise<UserResponse> {
+    const ALLOWED = [
+      'certified_professional',
+      'trusted_partner',
+      'official',
+    ] as const;
+    type AllowedTier = (typeof ALLOWED)[number];
+    if (!ALLOWED.includes(tier as AllowedTier)) {
+      throw new BadRequestException(
+        `verificationTier must be one of: ${ALLOWED.join(', ')}`,
+      );
+    }
+
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const updated = await this.prisma.wawuUser.update({
+      where: { id: userId },
+      data: { verificationTier: tier as AllowedTier },
+    });
+
+    return this.toUserResponse(updated);
   }
 
   // ── OTP (phone) ───────────────────────────────────────────────────────────────
