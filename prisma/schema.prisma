@@ -48,8 +48,9 @@ model WawuUser {
 
   createdAt     DateTime            @default(now()) @map("created_at")
   updatedAt     DateTime            @updatedAt @map("updated_at")
-  refreshTokens RefreshToken[]
-  resetTokens   PasswordResetToken[]
+  refreshTokens    RefreshToken[]
+  resetTokens      PasswordResetToken[]
+  activationTokens ActivationToken[]
 
   @@map("wawu_users")
 }
@@ -78,6 +79,19 @@ model PasswordResetToken {
 
   @@index([userId])
   @@map("password_reset_tokens")
+}
+
+model ActivationToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("activation_tokens")
 }
 
 model OtpSession {

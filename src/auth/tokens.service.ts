@@ -3,12 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import type { SignOptions } from 'jsonwebtoken';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwksService } from '../jwks/jwks.service';
 
 type ExpiresIn = NonNullable<SignOptions['expiresIn']>;
+
+/** Activation links are valid for 72 hours (mirrors password-reset handling). */
+const ACTIVATION_TOKEN_TTL_MS = 72 * 60 * 60 * 1000;
 
 /** Access-token payload — authoritative shape from Brief Section 2. */
 export interface AccessTokenPayload {
@@ -93,26 +96,47 @@ export class TokensService {
     return { accessToken, refreshToken };
   }
 
-  /** Mint a one-time activation token (used by provisioning for Category B). */
-  async signActivationToken(userId: string): Promise<string> {
-    return this.jwt.signAsync(
-      { sub: userId, purpose: 'activate' },
-      { algorithm: 'RS256', expiresIn: '72h' as ExpiresIn },
-    );
+  /**
+   * Mint a one-time activation token for Category B users. Mirrors password-reset
+   * tokens: a high-entropy random token is returned to the caller (to embed in an
+   * emailed link) while only its argon2 hash is persisted, with a 72h expiry.
+   */
+  async issueActivationToken(userId: string): Promise<string> {
+    const rawToken = randomBytes(32).toString('hex');
+    await this.prisma.activationToken.create({
+      data: {
+        userId,
+        tokenHash: await argon2.hash(rawToken),
+        expiresAt: new Date(Date.now() + ACTIVATION_TOKEN_TTL_MS),
+      },
+    });
+    return rawToken;
   }
 
-  /** Verify an activation token and return the user id it was issued for. */
-  async verifyActivationToken(token: string): Promise<string> {
-    let payload: { sub: string; purpose?: string };
-    try {
-      payload = await this.jwt.verifyAsync(token, { algorithms: ['RS256'] });
-    } catch {
+  /**
+   * Verify a presented activation token against the persisted records for a user
+   * and return the matching token record id (so the caller can consume it). The
+   * token is matched by argon2 hash and must not be expired.
+   */
+  async verifyActivationToken(
+    userId: string,
+    presented: string,
+  ): Promise<string> {
+    const records = await this.prisma.activationToken.findMany({
+      where: { userId },
+    });
+
+    let matched: (typeof records)[number] | undefined;
+    for (const record of records) {
+      if (await argon2.verify(record.tokenHash, presented)) {
+        matched = record;
+        break;
+      }
+    }
+    if (!matched || matched.expiresAt.getTime() <= Date.now()) {
       throw new UnauthorizedException('Invalid or expired activation token');
     }
-    if (payload.purpose !== 'activate') {
-      throw new UnauthorizedException('Invalid or expired activation token');
-    }
-    return payload.sub;
+    return matched.id;
   }
 
   /**

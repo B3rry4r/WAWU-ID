@@ -42,6 +42,8 @@ export interface ProvisioningStatus {
 export class ProvisioningService {
   private readonly logger = new Logger(ProvisioningService.name);
   private static readonly PER_PAGE = 500;
+  private static readonly DEFAULT_API_URL = 'https://production.wawuafrica.com';
+  private static readonly DEFAULT_APP_URL = 'https://production.wawuafrica.com';
 
   private state: ProvisioningStatus = {
     status: 'idle',
@@ -110,9 +112,12 @@ export class ProvisioningService {
    * wawu_users. Category B (no passwordHash) gets a one-time activation email.
    */
   async runProvisioning(): Promise<ProvisioningResult> {
-    const baseUrl = this.config
-      .getOrThrow<string>('WAWUAFRICA_API_URL')
-      .replace(/\/+$/, '');
+    // Bake a production default so provisioning never crashes on an empty env;
+    // a real WAWUAFRICA_API_URL still wins when configured.
+    const baseUrl = (
+      this.config.get<string>('WAWUAFRICA_API_URL') ||
+      ProvisioningService.DEFAULT_API_URL
+    ).replace(/\/+$/, '');
     const serviceKey = this.config.getOrThrow<string>('INTERNAL_SERVICE_KEY');
 
     let created = 0;
@@ -158,7 +163,7 @@ export class ProvisioningService {
             continue;
           }
 
-          await this.prisma.wawuUser.create({
+          const createdUser = await this.prisma.wawuUser.create({
             data: {
               email,
               phone,
@@ -176,9 +181,10 @@ export class ProvisioningService {
           });
           created++;
 
+          // Category B (password_hash IS NULL) users need to set a password.
+          // Issue a one-time activation token and email a real activation link.
           if (!record.passwordHash && email) {
-            // Email deferred — marketing team to deliver template.
-            // Category B users identifiable by: password_hash IS NULL AND onboarding_ref IS NOT NULL
+            await this.sendActivation(createdUser.id, email);
             activationEmailsQueued++;
           }
         } catch (err) {
@@ -205,5 +211,29 @@ export class ProvisioningService {
     );
 
     return { created, skipped, activationEmailsQueued };
+  }
+
+  /**
+   * Issue a one-time activation token for a freshly provisioned Category B user
+   * and email them a real activation link via the mail service (Resend). The
+   * MailService already logs a loud warning and skips delivery when
+   * RESEND_API_KEY is unset, so this path is real and works the moment the key
+   * is configured — without ever crashing the provisioning job.
+   */
+  private async sendActivation(userId: string, email: string): Promise<void> {
+    const rawToken = await this.tokens.issueActivationToken(userId);
+
+    // The activation link points at the app's activation route, mirroring the
+    // password-reset link shape (token + email so the route can identify the
+    // account and consume the one-time token).
+    const appUrl = (
+      this.config.get<string>('APP_URL') ||
+      ProvisioningService.DEFAULT_APP_URL
+    ).replace(/\/+$/, '');
+    const activationUrl = `${appUrl}/auth/activate?token=${rawToken}&email=${encodeURIComponent(
+      email,
+    )}`;
+
+    await this.mail.sendActivation(email, activationUrl);
   }
 }

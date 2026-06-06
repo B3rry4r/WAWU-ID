@@ -14,6 +14,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'crypto';
 import { AuthService } from './auth.service';
+import { UpdateTrustScoreDto } from './dto/update-trust-score.dto';
 import { UpdateVerificationTierDto } from './dto/update-verification-tier.dto';
 
 /**
@@ -49,6 +50,29 @@ export class InternalController {
       );
     }
     return { data: await this.auth.updateVerificationTier(userId, tier) };
+  }
+
+  /**
+   * PATCH /internal/users/:userId/trust-score
+   * Body: { trustScore } or { score } — integer in [0, 100].
+   * Called by the Hub to keep a user's authoritative trust score in sync. Same
+   * X-Service-Key guard as the verification-tier setter.
+   */
+  @Patch('users/:userId/trust-score')
+  @HttpCode(HttpStatus.OK)
+  async updateTrustScore(
+    @Param('userId') userId: string,
+    @Body() dto: UpdateTrustScoreDto,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    const trustScore = dto.trustScore ?? dto.score;
+    if (trustScore === undefined) {
+      throw new BadRequestException(
+        'Provide a trust score as `trustScore` or `score`.',
+      );
+    }
+    return { data: await this.auth.updateTrustScore(userId, trustScore) };
   }
 
   /**

@@ -182,6 +182,35 @@ export class AuthService {
   }
 
   /**
+   * Internal (X-Service-Key gated) trust-score update. Called by the Hub to keep
+   * a user's authoritative trust score in sync. Score is clamped to [0, 100].
+   */
+  async updateTrustScore(
+    userId: string,
+    trustScore: number,
+  ): Promise<UserResponse> {
+    if (!Number.isInteger(trustScore) || trustScore < 0 || trustScore > 100) {
+      throw new BadRequestException(
+        'trustScore must be an integer between 0 and 100',
+      );
+    }
+
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const updated = await this.prisma.wawuUser.update({
+      where: { id: userId },
+      data: { trustScore },
+    });
+
+    return this.toUserResponse(updated);
+  }
+
+  /**
    * Internal (X-Service-Key gated) account removal. Used to purge residual
    * or test accounts on request from WAWUAfrica-API ops tooling.
    *
@@ -398,8 +427,8 @@ export class AuthService {
 
   /** One-time activation for Category B users: set a password via emailed token. */
   async activate(dto: ActivateDto): Promise<TokenPair & { user: UserResponse }> {
-    const userId = await this.tokens.verifyActivationToken(dto.activationToken);
-    const user = await this.prisma.wawuUser.findUnique({ where: { id: userId } });
+    const email = dto.email.toLowerCase().trim();
+    const user = await this.prisma.wawuUser.findUnique({ where: { email } });
     if (!user) {
       throw new UnauthorizedException('Invalid or expired activation token');
     }
@@ -407,10 +436,17 @@ export class AuthService {
       throw new BadRequestException('Account already activated');
     }
 
-    const updated = await this.prisma.wawuUser.update({
-      where: { id: user.id },
-      data: { passwordHash: await argon2.hash(dto.password) },
-    });
+    // Match + consume the persisted one-time token (throws if invalid/expired).
+    await this.tokens.verifyActivationToken(user.id, dto.activationToken);
+
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.wawuUser.update({
+        where: { id: user.id },
+        data: { passwordHash: await argon2.hash(dto.password) },
+      }),
+      // One-time: invalidate every activation token for this user once used.
+      this.prisma.activationToken.deleteMany({ where: { userId: user.id } }),
+    ]);
 
     const pair = await this.tokens.issueTokens(updated);
     return { ...pair, user: this.toUserResponse(updated) };
