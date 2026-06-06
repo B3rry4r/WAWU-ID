@@ -19,12 +19,17 @@ export class OtpService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
   ) {
-    // Hard fail-fast: the OTP testing bypass must never be reachable in
-    // production. If the env var is present at startup in a prod deployment,
-    // refuse to boot rather than silently shipping an auth bypass.
+    // The OTP testing bypass must never be reachable in production. If the env
+    // var is present at startup in a prod deployment, log a loud security error
+    // rather than throwing — throwing here would crash the service on boot and
+    // cause an auth outage. The bypass is still NEVER honored in production: the
+    // runtime guard in generateAndSend() refuses to use it. This only flags the
+    // misconfiguration so it can be remediated.
     if (this.isProduction() && this.config.get<string>('OTP_BYPASS_CODE')) {
-      throw new InternalServerErrorException(
-        'OTP_BYPASS_CODE must not be set when NODE_ENV=production',
+      this.logger.error(
+        'SECURITY: OTP_BYPASS_CODE is set while NODE_ENV=production. The ' +
+          'bypass is being IGNORED and will NOT be honored, but it MUST be ' +
+          'unset in the production environment immediately.',
       );
     }
   }
