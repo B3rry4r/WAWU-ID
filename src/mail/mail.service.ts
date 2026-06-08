@@ -10,7 +10,8 @@ export class MailService {
 
   constructor(private readonly config: ConfigService) {
     this.from =
-      this.config.get<string>('MAIL_FROM') ?? 'WAWUAfrica <hello@wawu.africa>';
+      this.config.get<string>('MAIL_FROM') ??
+      'WAWUAfrica <noreply@wawuafrica.com>';
     const apiKey = this.config.get<string>('RESEND_API_KEY');
     if (!apiKey) {
       this.logger.warn('RESEND_API_KEY not set — emails will be skipped');

@@ -324,7 +324,7 @@ export class AuthService {
         const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
         await this.mail.sendPasswordReset(user.email, resetUrl);
       } else if (user.phone) {
-        // Mobile apps: send a 6-digit reset code over SMS via Termii.
+        // Mobile apps: send a 6-digit reset code over WhatsApp.
         await this.otp.generateAndSend(user.phone);
       }
     }

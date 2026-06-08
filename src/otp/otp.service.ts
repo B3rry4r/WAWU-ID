@@ -9,7 +9,6 @@ import { randomInt } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
 const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const TERMII_SEND_URL = 'https://api.ng.termii.com/api/sms/send';
 
 @Injectable()
 export class OtpService {
@@ -38,13 +37,13 @@ export class OtpService {
     return this.config.get<string>('NODE_ENV') === 'production';
   }
 
-  /** Generate a 6-digit code, persist its hash, and send it via Termii SMS. */
+  /** Generate a 6-digit code, persist its hash, and send it via WhatsApp. */
   async generateAndSend(phone: string): Promise<void> {
-    // Testing bypass: when OTP_BYPASS_CODE is set, skip Termii and store that
-    // fixed code as the OTP for any phone. Remove the env var to re-enable SMS.
-    // Hard-guarded: the bypass is ALWAYS ignored in production, even if the
-    // env var is somehow present (constructor also refuses to boot in that
-    // case). Dev/test behaviour is unchanged.
+    // Testing bypass: when OTP_BYPASS_CODE is set, skip WhatsApp and store that
+    // fixed code as the OTP for any phone. Remove the env var to re-enable
+    // WhatsApp delivery. Hard-guarded: the bypass is ALWAYS ignored in
+    // production, even if the env var is somehow present (constructor also
+    // refuses to boot in that case). Dev/test behaviour is unchanged.
     const bypassCode = this.config.get<string>('OTP_BYPASS_CODE');
     if (bypassCode && !this.isProduction()) {
       this.logger.warn('OTP bypass active — not for production');
@@ -52,14 +51,17 @@ export class OtpService {
       return;
     }
 
-    // Fail before any DB write if the SMS provider isn't configured.
-    if (!this.config.get<string>('TERMII_API_KEY')) {
-      throw new InternalServerErrorException('SMS provider is not configured');
+    // Fail before any DB write if the OTP provider isn't configured.
+    if (
+      !this.config.get<string>('WHATSAPP_TOKEN') ||
+      !this.config.get<string>('WHATSAPP_PHONE_NUMBER_ID')
+    ) {
+      throw new InternalServerErrorException('OTP provider is not configured');
     }
 
     const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
     await this.storeSession(phone, code);
-    await this.sendSms(phone, code);
+    await this.sendWhatsapp(phone, code);
   }
 
   /** Persist the hashed code, replacing any existing OTP for the phone. */
@@ -71,33 +73,56 @@ export class OtpService {
     });
   }
 
-  private async sendSms(phone: string, code: string): Promise<void> {
-    const apiKey = this.config.get<string>('TERMII_API_KEY');
-    if (!apiKey) {
-      throw new InternalServerErrorException('SMS provider is not configured');
+  private async sendWhatsapp(phone: string, code: string): Promise<void> {
+    const token = this.config.get<string>('WHATSAPP_TOKEN');
+    const phoneNumberId = this.config.get<string>('WHATSAPP_PHONE_NUMBER_ID');
+    if (!token || !phoneNumberId) {
+      throw new InternalServerErrorException('OTP provider is not configured');
     }
+
+    const apiVersion =
+      this.config.get<string>('WHATSAPP_API_VERSION') ?? 'v21.0';
+    const template = this.config.get<string>('WHATSAPP_OTP_TEMPLATE') ?? 'wawu_otp';
+    const lang = this.config.get<string>('WHATSAPP_OTP_LANG') ?? 'en';
+
+    // Meta expects the recipient as E.164 digits with no leading '+'.
+    const to = phone.replace(/\D/g, '');
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
     let response: Response;
     try {
-      response = await fetch(TERMII_SEND_URL, {
+      response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          to: phone,
-          from: this.config.get<string>('TERMII_SENDER_ID') ?? 'WAWUAfrica',
-          sms: `Your WAWUAfrica code is ${code}. Expires in 5 minutes.`,
-          type: 'plain',
-          channel: 'generic',
-          api_key: apiKey,
+          messaging_product: 'whatsapp',
+          to,
+          type: 'template',
+          template: {
+            name: template,
+            language: { code: lang },
+            components: [
+              { type: 'body', parameters: [{ type: 'text', text: code }] },
+              {
+                type: 'button',
+                sub_type: 'url',
+                index: '0',
+                parameters: [{ type: 'text', text: code }],
+              },
+            ],
+          },
         }),
       });
     } catch (err) {
-      this.logger.error(`Termii request failed: ${String(err)}`);
+      this.logger.error(`WhatsApp request failed: ${String(err)}`);
       throw new InternalServerErrorException('Failed to send OTP');
     }
 
     const bodyText = await response.text();
-    this.logger.log(`Termii response [${response.status}]: ${bodyText}`);
+    this.logger.log(`WhatsApp response [${response.status}]: ${bodyText}`);
 
     if (!response.ok) {
       throw new InternalServerErrorException('Failed to send OTP');

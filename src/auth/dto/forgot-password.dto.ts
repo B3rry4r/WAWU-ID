@@ -6,7 +6,7 @@ export class ForgotPasswordDto {
   identifier!: string; // accepts email OR phone number
 
   // Delivery channel for the reset secret.
-  //   'sms'   → 6-digit Termii code (mobile apps; default).
+  //   'sms'   → 6-digit code delivered via WhatsApp (mobile apps; default).
   //   'email' → Resend reset link (web hub; requires an email on the account).
   @IsOptional()
   @IsIn(['sms', 'email'])
