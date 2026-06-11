@@ -101,6 +101,12 @@ export class AuthService {
       },
     });
 
+    // Fire-and-forget the branded WAWUAfrica welcome email; never block or fail
+    // registration on mail delivery (MailService already swallows send errors).
+    if (user.email) {
+      void this.mail.sendWelcome(user.email, user.firstName);
+    }
+
     const pair = await this.tokens.issueTokens(user);
     return { ...pair, user: this.toUserResponse(user, dto.occupation ?? null) };
   }
@@ -132,6 +138,19 @@ export class AuthService {
     const valid = await argon2.verify(user.passwordHash, dto.password);
     if (!valid) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // Fire-and-forget login-alert email. CTA points at the account-security
+    // page (env-overridable, defaults to the reset-password route on APP_URL).
+    if (user.email) {
+      const appUrl = (this.config.get<string>('APP_URL') ?? '').replace(
+        /\/+$/,
+        '',
+      );
+      const secureUrl =
+        this.config.get<string>('SECURITY_URL') ??
+        `${appUrl}/auth/forgot-password`;
+      void this.mail.sendLoginAlert(user.email, secureUrl, user.firstName);
     }
 
     const pair = await this.tokens.issueTokens(user);
@@ -177,6 +196,12 @@ export class AuthService {
       where: { id: userId },
       data: { verificationTier: tier as AllowedTier },
     });
+
+    // Elevation to a trusted tier = account approved. Fire-and-forget the
+    // branded "Account Approved" email (never block the tier update on mail).
+    if (updated.email) {
+      void this.mail.sendAccountApproved(updated.email, updated.firstName);
+    }
 
     return this.toUserResponse(updated);
   }
@@ -322,7 +347,7 @@ export class AuthService {
 
         const appUrl = this.config.get<string>('APP_URL') ?? '';
         const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
-        await this.mail.sendPasswordReset(user.email, resetUrl);
+        await this.mail.sendPasswordReset(user.email, resetUrl, user.firstName);
       } else if (user.phone) {
         // Mobile apps: send a 6-digit reset code over WhatsApp.
         await this.otp.generateAndSend(user.phone);

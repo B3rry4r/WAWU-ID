@@ -184,7 +184,7 @@ export class ProvisioningService {
           // Category B (password_hash IS NULL) users need to set a password.
           // Issue a one-time activation token and email a real activation link.
           if (!record.passwordHash && email) {
-            await this.sendActivation(createdUser.id, email);
+            await this.sendActivation(createdUser.id, email, record.firstName);
             activationEmailsQueued++;
           }
         } catch (err) {
@@ -220,7 +220,11 @@ export class ProvisioningService {
    * RESEND_API_KEY is unset, so this path is real and works the moment the key
    * is configured — without ever crashing the provisioning job.
    */
-  private async sendActivation(userId: string, email: string): Promise<void> {
+  private async sendActivation(
+    userId: string,
+    email: string,
+    firstName?: string | null,
+  ): Promise<void> {
     const rawToken = await this.tokens.issueActivationToken(userId);
 
     // The activation link points at the app's activation route, mirroring the
@@ -234,6 +238,6 @@ export class ProvisioningService {
       email,
     )}`;
 
-    await this.mail.sendActivation(email, activationUrl);
+    await this.mail.sendPasswordCreation(email, activationUrl, firstName);
   }
 }
