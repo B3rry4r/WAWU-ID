@@ -46,6 +46,20 @@ export class ProvisioningController {
     return this.provisioning.provisionSafUser(dto);
   }
 
+  /**
+   * POST /admin/provision/saf/delete — remove a provisioned user by email or
+   * phone. Service-key guarded. For test-data cleanup and admin removal.
+   */
+  @Post('provision/saf/delete')
+  @HttpCode(200)
+  async deleteSaf(
+    @Headers('x-service-key') serviceKey: string,
+    @Body() dto: { email?: string; phone?: string },
+  ) {
+    this.assertServiceKey(serviceKey);
+    return this.provisioning.deleteSafUser(dto);
+  }
+
   /** GET /admin/provision/status — last (or in-flight) job result. */
   @Get('provision/status')
   status(@Headers('x-service-key') serviceKey?: string) {

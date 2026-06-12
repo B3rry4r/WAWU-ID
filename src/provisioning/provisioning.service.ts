@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SafProvisionDto } from './dto/saf-provision.dto';
 import { MailService } from '../mail/mail.service';
@@ -230,9 +230,12 @@ export class ProvisioningService {
     });
 
     if (existing) {
-      throw new ConflictException(
-        'A WAWU-ID account already exists for this email or phone number.',
-      );
+      // Idempotent: the person already has a WAWU-ID — e.g. they were bulk-
+      // provisioned from onboarding, or registered for SAF before. Return their
+      // existing id so the SAF registration links to the same identity and the
+      // QR / attendance scan resolve correctly. No activation email is sent
+      // because the account (and any password) already exists.
+      return { wawuId: existing.id, activationToken: '' };
     }
 
     const created = await this.prisma.wawuUser.create({
@@ -260,6 +263,28 @@ export class ProvisioningService {
     }
 
     return { wawuId: created.id, activationToken };
+  }
+
+  /**
+   * Delete a provisioned user by email or phone. Service-key guarded at the
+   * controller; intended for test-data cleanup and admin removal. Refresh,
+   * reset and activation token rows cascade-delete with the user.
+   */
+  async deleteSafUser(dto: {
+    email?: string | null;
+    phone?: string | null;
+  }): Promise<{ deleted: number }> {
+    const email = dto.email ? dto.email.toLowerCase().trim() : null;
+    const phone = dto.phone ? dto.phone.trim() : null;
+    if (!email && !phone) {
+      return { deleted: 0 };
+    }
+    const result = await this.prisma.wawuUser.deleteMany({
+      where: {
+        OR: [...(email ? [{ email }] : []), ...(phone ? [{ phone }] : [])],
+      },
+    });
+    return { deleted: result.count };
   }
 
   /**
