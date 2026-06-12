@@ -51,6 +51,7 @@ model WawuUser {
   refreshTokens    RefreshToken[]
   resetTokens      PasswordResetToken[]
   activationTokens ActivationToken[]
+  consents         Consent[]
 
   @@map("wawu_users")
 }
@@ -103,4 +104,43 @@ model OtpSession {
 
   @@index([phone])
   @@map("otp_sessions")
+}
+
+// A published version of a legal document (privacy, terms, …). The actual text
+// lives on the canonical web page at `url`; this row is the version-of-record so
+// every app/client reads one source and consent can be tracked per version.
+// To publish an update: insert a new row (new version) — the current one is the
+// published row with the latest effectiveDate.
+model Policy {
+  id            String   @id @default(uuid()) @db.Uuid
+  slug          String // 'privacy', 'terms', …
+  version       String // e.g. '2026.06.01'
+  title         String
+  url           String // canonical web page rendering the full text
+  effectiveDate DateTime @map("effective_date")
+  summary       String? // optional changelog / what changed
+  published     Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([slug, version])
+  @@index([slug, published])
+  @@map("policies")
+}
+
+// Immutable consent ledger: who accepted which policy version, when, from where.
+// One row per acceptance — the audit trail for NDPA/NDPR and re-consent flows.
+model Consent {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  slug       String
+  version    String
+  source     String? // 'web' | 'wawubasket' | 'wawubeauty' | 'saf' | …
+  ip         String?
+  acceptedAt DateTime @default(now()) @map("accepted_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, slug])
+  @@index([slug, version])
+  @@map("consents")
 }

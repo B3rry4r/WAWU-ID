@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { JwksModule } from './jwks/jwks.module';
+import { PoliciesModule } from './policies/policies.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProvisioningModule } from './provisioning/provisioning.module';
 
@@ -13,6 +14,7 @@ import { ProvisioningModule } from './provisioning/provisioning.module';
     HealthModule,
     JwksModule,
     AuthModule,
+    PoliciesModule,
     ProvisioningModule,
   ],
 })

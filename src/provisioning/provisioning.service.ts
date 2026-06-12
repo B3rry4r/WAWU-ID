@@ -4,6 +4,7 @@ import { SafProvisionDto } from './dto/saf-provision.dto';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TokensService } from '../auth/tokens.service';
+import { PoliciesService } from '../policies/policies.service';
 
 /** One record from the WAWUAfrica provisioning export (Brief Section 2). */
 interface ExportRecord {
@@ -60,6 +61,7 @@ export class ProvisioningService {
     private readonly mail: MailService,
     private readonly tokens: TokensService,
     private readonly config: ConfigService,
+    private readonly policies: PoliciesService,
   ) {}
 
   /**
@@ -236,6 +238,7 @@ export class ProvisioningService {
       // existing id so the SAF registration links to the same identity and the
       // QR / attendance scan resolve correctly. No activation email is sent
       // because the account (and any password) already exists.
+      await this.recordSafConsent(existing.id);
       return { wawuId: existing.id, activationToken: '' };
     }
 
@@ -267,7 +270,22 @@ export class ProvisioningService {
       await this.mail.sendPasswordCreation(email, activationUrl, dto.firstName ?? null);
     }
 
+    await this.recordSafConsent(created.id);
     return { wawuId: created.id, activationToken };
+  }
+
+  /**
+   * Record privacy-policy consent for a SAF registrant. The SAF form captures
+   * explicit consent, so provisioning the WAWU-ID account also writes the
+   * consent ledger entry. Never throws — a consent-logging hiccup must not fail
+   * the registration.
+   */
+  private async recordSafConsent(userId: string): Promise<void> {
+    try {
+      await this.policies.recordConsent(userId, 'privacy', 'saf');
+    } catch (err) {
+      this.logger.warn(`Could not record SAF consent for ${userId}: ${String(err)}`);
+    }
   }
 
   /**
