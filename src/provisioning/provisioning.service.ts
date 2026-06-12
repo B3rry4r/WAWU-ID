@@ -44,7 +44,8 @@ export class ProvisioningService {
   private readonly logger = new Logger(ProvisioningService.name);
   private static readonly PER_PAGE = 500;
   private static readonly DEFAULT_API_URL = 'https://production.wawuafrica.com';
-  private static readonly DEFAULT_APP_URL = 'https://production.wawuafrica.com';
+  // Frontend base for email links (activation/reset) — NOT the API host.
+  private static readonly DEFAULT_APP_URL = 'https://wawuafrica.com';
 
   private state: ProvisioningStatus = {
     status: 'idle',
@@ -255,8 +256,12 @@ export class ProvisioningService {
     let activationToken = '';
     if (email) {
       activationToken = await this.tokens.issueActivationToken(created.id);
+      // Email links must point at the FRONTEND, not this API. Prefer FRONTEND_URL;
+      // APP_URL is a legacy fallback (it has historically been mis-set to the API).
       const appUrl = (
-        this.config.get<string>('APP_URL') || 'https://wawuafrica.com'
+        this.config.get<string>('FRONTEND_URL') ||
+        this.config.get<string>('APP_URL') ||
+        'https://wawuafrica.com'
       ).replace(/\/+$/, '');
       const activationUrl = `${appUrl}/auth/activate?token=${activationToken}&email=${encodeURIComponent(email)}`;
       await this.mail.sendPasswordCreation(email, activationUrl, dto.firstName ?? null);
@@ -305,6 +310,7 @@ export class ProvisioningService {
     // password-reset link shape (token + email so the route can identify the
     // account and consume the one-time token).
     const appUrl = (
+      this.config.get<string>('FRONTEND_URL') ||
       this.config.get<string>('APP_URL') ||
       ProvisioningService.DEFAULT_APP_URL
     ).replace(/\/+$/, '');

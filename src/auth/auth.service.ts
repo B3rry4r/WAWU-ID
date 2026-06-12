@@ -143,10 +143,11 @@ export class AuthService {
     // Fire-and-forget login-alert email. CTA points at the account-security
     // page (env-overridable, defaults to the reset-password route on APP_URL).
     if (user.email) {
-      const appUrl = (this.config.get<string>('APP_URL') ?? '').replace(
-        /\/+$/,
-        '',
-      );
+      const appUrl = (
+        this.config.get<string>('FRONTEND_URL') ??
+        this.config.get<string>('APP_URL') ??
+        ''
+      ).replace(/\/+$/, '');
       const secureUrl =
         this.config.get<string>('SECURITY_URL') ??
         `${appUrl}/auth/forgot-password`;
@@ -345,7 +346,10 @@ export class AuthService {
           },
         });
 
-        const appUrl = this.config.get<string>('APP_URL') ?? '';
+        const appUrl =
+          this.config.get<string>('FRONTEND_URL') ??
+          this.config.get<string>('APP_URL') ??
+          '';
         const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
         await this.mail.sendPasswordReset(user.email, resetUrl, user.firstName);
       } else if (user.phone) {
