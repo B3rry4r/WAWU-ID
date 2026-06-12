@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Headers,
@@ -8,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'crypto';
+import { SafProvisionDto } from './dto/saf-provision.dto';
 import { ProvisioningService } from './provisioning.service';
 
 @Controller('admin')
@@ -27,6 +29,21 @@ export class ProvisioningController {
     this.assertServiceKey(serviceKey);
     this.provisioning.start();
     return { message: 'Provisioning job started', status: 'running' };
+  }
+
+  /**
+   * POST /admin/provision/saf — synchronously provision a single SAF user and
+   * return the new WAWU-ID plus the one-time activation token (empty string when
+   * no email was supplied). Guarded by the X-Service-Key header.
+   */
+  @Post('provision/saf')
+  @HttpCode(201)
+  async provisionSaf(
+    @Headers('x-service-key') serviceKey: string,
+    @Body() dto: SafProvisionDto,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return this.provisioning.provisionSafUser(dto);
   }
 
   /** GET /admin/provision/status — last (or in-flight) job result. */

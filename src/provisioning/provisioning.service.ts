@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { SafProvisionDto } from './dto/saf-provision.dto';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TokensService } from '../auth/tokens.service';
@@ -211,6 +212,54 @@ export class ProvisioningService {
     );
 
     return { created, skipped, activationEmailsQueued };
+  }
+
+  /**
+   * Synchronously provision a single SAF user. Creates the wawu_users record
+   * and — when an email address is supplied — issues an activation token and
+   * sends a password-creation email so the user can set their password.
+   */
+  async provisionSafUser(dto: SafProvisionDto): Promise<{ wawuId: string; activationToken: string }> {
+    const email = dto.email ? dto.email.toLowerCase().trim() : null;
+    const phone = dto.phone.trim();
+
+    const existing = await this.prisma.wawuUser.findFirst({
+      where: {
+        OR: [...(email ? [{ email }] : []), { phone }],
+      },
+    });
+
+    if (existing) {
+      throw new ConflictException(
+        'A WAWU-ID account already exists for this email or phone number.',
+      );
+    }
+
+    const created = await this.prisma.wawuUser.create({
+      data: {
+        email,
+        phone,
+        firstName: dto.firstName ?? null,
+        lastName: dto.lastName ?? null,
+        country: 'Nigeria',
+        passwordHash: null,
+        verificationTier: 'basic',
+        trustScore: 0,
+        status: 'active',
+      },
+    });
+
+    let activationToken = '';
+    if (email) {
+      activationToken = await this.tokens.issueActivationToken(created.id);
+      const appUrl = (
+        this.config.get<string>('APP_URL') || 'https://wawuafrica.com'
+      ).replace(/\/+$/, '');
+      const activationUrl = `${appUrl}/auth/activate?token=${activationToken}&email=${encodeURIComponent(email)}`;
+      await this.mail.sendPasswordCreation(email, activationUrl, dto.firstName ?? null);
+    }
+
+    return { wawuId: created.id, activationToken };
   }
 
   /**
