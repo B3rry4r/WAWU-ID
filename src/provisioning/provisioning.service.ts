@@ -238,7 +238,7 @@ export class ProvisioningService {
       // existing id so the SAF registration links to the same identity and the
       // QR / attendance scan resolve correctly. No activation email is sent
       // because the account (and any password) already exists.
-      await this.recordSafConsent(existing.id);
+      await this.recordSafConsent(existing.id, dto.source);
       return { wawuId: existing.id, activationToken: '' };
     }
 
@@ -270,7 +270,7 @@ export class ProvisioningService {
       await this.mail.sendPasswordCreation(email, activationUrl, dto.firstName ?? null);
     }
 
-    await this.recordSafConsent(created.id);
+    await this.recordSafConsent(created.id, dto.source);
     return { wawuId: created.id, activationToken };
   }
 
@@ -280,9 +280,9 @@ export class ProvisioningService {
    * consent ledger entry. Never throws — a consent-logging hiccup must not fail
    * the registration.
    */
-  private async recordSafConsent(userId: string): Promise<void> {
+  private async recordSafConsent(userId: string, source = 'saf'): Promise<void> {
     try {
-      await this.policies.recordConsent(userId, 'privacy', 'saf');
+      await this.policies.recordConsent(userId, 'privacy', source);
     } catch (err) {
       this.logger.warn(`Could not record SAF consent for ${userId}: ${String(err)}`);
     }

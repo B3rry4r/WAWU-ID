@@ -16,4 +16,9 @@ export class SafProvisionDto {
   @IsString()
   @IsOptional()
   lastName?: string;
+
+  /** Which programme drove this provisioning — recorded on the consent ledger. */
+  @IsString()
+  @IsOptional()
+  source?: string;
 }
