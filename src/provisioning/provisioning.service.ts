@@ -266,7 +266,10 @@ export class ProvisioningService {
         this.config.get<string>('APP_URL') ||
         'https://wawuafrica.com'
       ).replace(/\/+$/, '');
-      const activationUrl = `${appUrl}/auth/activate?token=${activationToken}&email=${encodeURIComponent(email)}`;
+      // Path has NO /auth prefix: the frontend keeps these pages under the
+      // (auth) ROUTE GROUP, which Next.js strips from the URL — the live route
+      // is /activate, not /auth/activate (which 404s).
+      const activationUrl = `${appUrl}/activate?token=${activationToken}&email=${encodeURIComponent(email)}`;
       await this.mail.sendPasswordCreation(email, activationUrl, dto.firstName ?? null);
     }
 
@@ -332,7 +335,9 @@ export class ProvisioningService {
       this.config.get<string>('APP_URL') ||
       ProvisioningService.DEFAULT_APP_URL
     ).replace(/\/+$/, '');
-    const activationUrl = `${appUrl}/auth/activate?token=${rawToken}&email=${encodeURIComponent(
+    // No /auth prefix — the frontend serves /activate via the (auth) route
+    // group, which Next.js strips from the URL (/auth/activate 404s).
+    const activationUrl = `${appUrl}/activate?token=${rawToken}&email=${encodeURIComponent(
       email,
     )}`;
 

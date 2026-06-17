@@ -148,9 +148,11 @@ export class AuthService {
         this.config.get<string>('APP_URL') ??
         ''
       ).replace(/\/+$/, '');
+      // No /auth prefix: the frontend's (auth) route group is stripped from the
+      // URL, so the live route is /forgot-password (not /auth/forgot-password).
       const secureUrl =
         this.config.get<string>('SECURITY_URL') ??
-        `${appUrl}/auth/forgot-password`;
+        `${appUrl}/forgot-password`;
       void this.mail.sendLoginAlert(user.email, secureUrl, user.firstName);
     }
 
@@ -350,7 +352,9 @@ export class AuthService {
           this.config.get<string>('FRONTEND_URL') ??
           this.config.get<string>('APP_URL') ??
           '';
-        const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
+        // No /auth prefix — the frontend serves /reset-password via the (auth)
+        // route group, which Next.js strips from the URL (/auth/... 404s).
+        const resetUrl = `${appUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
         await this.mail.sendPasswordReset(user.email, resetUrl, user.firstName);
       } else if (user.phone) {
         // Mobile apps: send a 6-digit reset code over WhatsApp.
