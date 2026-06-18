@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Param,
   Patch,
+  Post,
   Query,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -99,6 +100,23 @@ export class InternalController {
         (mode as 'hard' | 'anonymize') ?? 'hard',
       ),
     };
+  }
+
+  /**
+   * POST /internal/users/:userId/mark-deletion
+   * Starts the cross-ecosystem account-deletion grace period: marks the account
+   * `pending_deletion`, stamps `deletedAt`, and revokes all sessions + reset
+   * tokens. Same X-Service-Key guard as the other internal routes. Idempotent.
+   * The hub finalizes ~48h later via DELETE /internal/users/:userId?mode=anonymize.
+   */
+  @Post('users/:userId/mark-deletion')
+  @HttpCode(HttpStatus.OK)
+  async markDeletion(
+    @Param('userId') userId: string,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.markPendingDeletion(userId) };
   }
 
   private assertServiceKey(provided?: string): void {

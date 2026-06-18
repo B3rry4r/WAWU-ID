@@ -272,7 +272,11 @@ export class AuthService {
             country: null,
             state: null,
             passwordHash: null,
+            // Terminal state for a finalized account: `banned` (a finalized,
+            // PII-scrubbed account is permanently barred). Stamp deletedAt so
+            // the row is unambiguously a deleted account, not just a ban.
             status: 'banned',
+            deletedAt: new Date(),
           },
         });
         await tx.refreshToken.deleteMany({ where: { userId } });
@@ -285,6 +289,42 @@ export class AuthService {
     // Hard delete — refresh/reset tokens cascade via the schema relations.
     await this.prisma.wawuUser.delete({ where: { id: userId } });
     return { id: userId, status: 'deleted', deleted: true };
+  }
+
+  /**
+   * Internal (X-Service-Key gated) start of the cross-ecosystem deletion flow.
+   * Marks the account `pending_deletion`, stamps `deletedAt`, and revokes ALL
+   * active sessions + password-reset tokens (same revocation as the anonymize
+   * path). The hub finalizes the deletion ~48h later via deleteUser(anonymize).
+   *
+   * Idempotent: re-marking an account that is already pending_deletion just
+   * refreshes deletedAt and re-revokes tokens — it never throws on repeat calls.
+   */
+  async markPendingDeletion(
+    userId: string,
+  ): Promise<{ id: string; status: string }> {
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.wawuUser.update({
+        where: { id: userId },
+        data: {
+          status: 'pending_deletion',
+          deletedAt: new Date(),
+        },
+      });
+      // Same revocation the anonymize path uses: drop every session + reset token.
+      await tx.refreshToken.deleteMany({ where: { userId } });
+      await tx.passwordResetToken.deleteMany({ where: { userId } });
+      return u;
+    });
+
+    return { id: updated.id, status: updated.status };
   }
 
   // ── OTP (phone) ───────────────────────────────────────────────────────────────
