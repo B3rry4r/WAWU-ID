@@ -239,6 +239,47 @@ export class AuthService {
   }
 
   /**
+   * Internal (X-Service-Key gated) phone-number correction. The hub proxies a
+   * user's own phone update here (e.g. a wrong number entered at onboarding).
+   * Phone is unique + NOT NULL on `wawu_users`, so we reject any number already
+   * held by another account with a 409.
+   *
+   * NOTE: v1 performs a direct, uniqueness-checked update with no OTP step.
+   * Verifying ownership of the new number via WhatsApp/SMS OTP is a planned
+   * future enhancement (delivery not yet configured).
+   */
+  async updatePhone(userId: string, phone: string): Promise<UserResponse> {
+    const trimmed = phone.trim();
+    if (!/^\d+$/.test(trimmed) || trimmed.length < 7) {
+      throw new BadRequestException(
+        'phone must contain only digits and be at least 7 characters',
+      );
+    }
+
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // Ensure no OTHER user already holds this phone (unique constraint).
+    const taken = await this.prisma.wawuUser.findFirst({
+      where: { phone: trimmed, id: { not: userId } },
+    });
+    if (taken) {
+      throw new ConflictException('Phone number already in use');
+    }
+
+    const updated = await this.prisma.wawuUser.update({
+      where: { id: userId },
+      data: { phone: trimmed },
+    });
+
+    return this.toUserResponse(updated);
+  }
+
+  /**
    * Internal (X-Service-Key gated) account removal. Used to purge residual
    * or test accounts on request from WAWUAfrica-API ops tooling.
    *
