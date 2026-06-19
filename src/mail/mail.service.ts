@@ -200,21 +200,36 @@ export class MailService {
   ): Promise<void> {
     const body = [
       this.p(
-        'Your WAWUAfrica account is almost ready. The only thing left is creating a password so you can securely access your profile and everything waiting for you inside.',
+        'For years, WAWUAfrica has been a place to discover opportunities, learn new skills, grow your business, and connect with a powerful ecosystem. But we could only hear you through emails and WhatsApp messages.',
       ),
       this.p(
-        'A strong password is like a good gate. It keeps the right people in and the wrong people out. See you inside.',
+        'Now we have added something new — a place for your thoughts, your experiences, your opinions, your stories, your voice.',
+      ),
+      this.p(
+        'Welcome to the new WAWUAfrica Community: a space where entrepreneurs, students, professionals, farmers, creators, traders, innovators, and everyday Africans like you can connect, learn, debate, laugh, inspire, and be inspired.',
+      ),
+      this.p('A few conversations have already started:'),
+      '<ul style="margin:0 0 16px;padding-left:20px;font-size:16px;line-height:1.6;color:#111111;">' +
+        '<li style="margin:0 0 6px;">African Parents Deserve Their Own Country</li>' +
+        '<li style="margin:0 0 6px;">Soft Life Is Expensive</li>' +
+        "<li style=\"margin:0 0 6px;\">I Know Somebody Is Africa's Biggest Industry</li>" +
+        '<li style="margin:0 0 6px;">The Next African Unicorn Might Be in This Community</li>' +
+        '<li style="margin:0 0 6px;">Farming Is Having a Glow-Up</li>' +
+        '</ul>',
+      this.p('And trust us — the comments are where the real magic happens.'),
+      this.p(
+        '<strong>Your account is ready.</strong> Setting your password takes under a minute — just tap the button below to set it and step inside.',
       ),
     ].join('');
 
     await this.send(
       email,
-      'Let us Get Your Account Ready',
+      'Africa is talking. Come and say something.',
       this.layout({
-        preheader: 'Create your password to finish setting up your account.',
+        preheader: 'Set your password and step into the new WAWUAfrica Community.',
         firstName,
         bodyHtml: body,
-        cta: { label: 'Create Password', url: activationUrl },
+        cta: { label: 'Set My Password', url: activationUrl },
       }),
     );
   }

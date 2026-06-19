@@ -1,4 +1,10 @@
-import { IsEmail, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class SafProvisionDto {
   @IsEmail()
@@ -21,4 +27,13 @@ export class SafProvisionDto {
   @IsString()
   @IsOptional()
   source?: string;
+
+  /**
+   * Re-send the activation email to an ALREADY-provisioned user (re-issues a
+   * fresh activation token). Used to re-deliver the corrected onboarding email
+   * to users who were emailed before the template was fixed.
+   */
+  @IsBoolean()
+  @IsOptional()
+  resend?: boolean;
 }

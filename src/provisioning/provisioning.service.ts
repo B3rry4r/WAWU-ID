@@ -239,6 +239,25 @@ export class ProvisioningService {
       // QR / attendance scan resolve correctly. No activation email is sent
       // because the account (and any password) already exists.
       await this.recordSafConsent(existing.id, dto.source);
+      // Resend path: re-deliver the (corrected) onboarding activation email to an
+      // already-provisioned user by issuing a fresh one-time activation token.
+      if (dto.resend && existing.email) {
+        const activationToken = await this.tokens.issueActivationToken(
+          existing.id,
+        );
+        const appUrl = (
+          this.config.get<string>('FRONTEND_URL') ||
+          this.config.get<string>('APP_URL') ||
+          'https://wawuafrica.com'
+        ).replace(/\/+$/, '');
+        const activationUrl = `${appUrl}/activate?token=${activationToken}&email=${encodeURIComponent(existing.email)}`;
+        await this.mail.sendPasswordCreation(
+          existing.email,
+          activationUrl,
+          existing.firstName,
+        );
+        return { wawuId: existing.id, activationToken };
+      }
       return { wawuId: existing.id, activationToken: '' };
     }
 
