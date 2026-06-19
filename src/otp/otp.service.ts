@@ -6,6 +6,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import * as argon2 from 'argon2';
 import { randomInt } from 'crypto';
+import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -17,6 +18,7 @@ export class OtpService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly mail: MailService,
   ) {
     // The OTP testing bypass must never be reachable in production. If the env
     // var is present at startup in a prod deployment, log a loud security error
@@ -51,17 +53,32 @@ export class OtpService {
       return;
     }
 
-    // Fail before any DB write if the OTP provider isn't configured.
-    if (
-      !this.config.get<string>('WHATSAPP_TOKEN') ||
-      !this.config.get<string>('WHATSAPP_PHONE_NUMBER_ID')
-    ) {
+    const whatsappConfigured =
+      !!this.config.get<string>('WHATSAPP_TOKEN') &&
+      !!this.config.get<string>('WHATSAPP_PHONE_NUMBER_ID');
+
+    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+
+    if (whatsappConfigured) {
+      // Primary path: deliver the code over WhatsApp (Meta Cloud API).
+      await this.storeSession(phone, code);
+      await this.sendWhatsapp(phone, code);
+      return;
+    }
+
+    // Fallback path: WhatsApp is not configured yet, so deliver the code by
+    // EMAIL instead of failing. We look up the user that owns this phone and
+    // send to their registered email. This auto-switches back to WhatsApp the
+    // moment WHATSAPP_TOKEN + WHATSAPP_PHONE_NUMBER_ID are set in the env.
+    const user = await this.prisma.wawuUser.findFirst({ where: { phone } });
+    if (!user?.email) {
+      // Neither WhatsApp nor an email-on-file is available — keep the existing
+      // "not configured" failure so callers behave exactly as before.
       throw new InternalServerErrorException('OTP provider is not configured');
     }
 
-    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
     await this.storeSession(phone, code);
-    await this.sendWhatsapp(phone, code);
+    await this.mail.sendOtpCode(user.email, code, 'verify your phone number');
   }
 
   /** Persist the hashed code, replacing any existing OTP for the phone. */
@@ -82,7 +99,8 @@ export class OtpService {
 
     const apiVersion =
       this.config.get<string>('WHATSAPP_API_VERSION') ?? 'v21.0';
-    const template = this.config.get<string>('WHATSAPP_OTP_TEMPLATE') ?? 'wawu_otp';
+    const template =
+      this.config.get<string>('WHATSAPP_OTP_TEMPLATE') ?? 'wawu_otp';
     const lang = this.config.get<string>('WHATSAPP_OTP_LANG') ?? 'en';
 
     // Meta expects the recipient as E.164 digits with no leading '+'.

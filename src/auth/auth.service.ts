@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 import { MailService } from '../mail/mail.service';
 import { OtpService } from '../otp/otp.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -32,6 +32,7 @@ export interface UserResponse {
 }
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+const PHONE_CHANGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 @Injectable()
 export class AuthService {
@@ -151,8 +152,7 @@ export class AuthService {
       // No /auth prefix: the frontend's (auth) route group is stripped from the
       // URL, so the live route is /forgot-password (not /auth/forgot-password).
       const secureUrl =
-        this.config.get<string>('SECURITY_URL') ??
-        `${appUrl}/forgot-password`;
+        this.config.get<string>('SECURITY_URL') ?? `${appUrl}/forgot-password`;
       void this.mail.sendLoginAlert(user.email, secureUrl, user.firstName);
     }
 
@@ -279,6 +279,117 @@ export class AuthService {
     return this.toUserResponse(updated);
   }
 
+  // ── phone change via email OTP (2-step) ─────────────────────────────────────
+
+  /**
+   * Step 1 of the verified phone-change flow. Validates the requested number,
+   * ensures it is not already held by another account, then generates a 6-digit
+   * code, stores its argon2 hash (+ the new phone + a 10-minute expiry) in a
+   * PhoneChangeRequest — replacing any prior pending request for this user — and
+   * EMAILS the code to the user's REGISTERED email. The code itself is never
+   * returned (no leakage); the caller only learns that it was sent.
+   */
+  async requestPhoneChange(
+    userId: string,
+    newPhone: string,
+  ): Promise<{ sent: true }> {
+    const trimmed = newPhone.trim();
+    if (!/^\d+$/.test(trimmed) || trimmed.length < 7) {
+      throw new BadRequestException(
+        'phone must contain only digits and be at least 7 characters',
+      );
+    }
+
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (!user.email) {
+      throw new BadRequestException(
+        'No email on file to send the verification code to',
+      );
+    }
+
+    // The new number must not already belong to another account (unique phone).
+    const taken = await this.prisma.wawuUser.findFirst({
+      where: { phone: trimmed, id: { not: userId } },
+    });
+    if (taken) {
+      throw new ConflictException('Phone number already in use');
+    }
+
+    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+    const codeHash = await argon2.hash(code);
+
+    // At most one pending request per user: drop any prior one before inserting.
+    await this.prisma.$transaction([
+      this.prisma.phoneChangeRequest.deleteMany({ where: { userId } }),
+      this.prisma.phoneChangeRequest.create({
+        data: {
+          userId,
+          newPhone: trimmed,
+          codeHash,
+          expiresAt: new Date(Date.now() + PHONE_CHANGE_TTL_MS),
+        },
+      }),
+    ]);
+
+    await this.mail.sendOtpCode(
+      user.email,
+      code,
+      'verify your phone number change',
+    );
+
+    return { sent: true };
+  }
+
+  /**
+   * Step 2 of the verified phone-change flow. Loads the latest non-expired
+   * PhoneChangeRequest for the user, verifies the submitted code, re-checks
+   * uniqueness of the new number, then updates the user's phone and consumes the
+   * request. Returns the updated UserResponse. A bad/expired code is rejected.
+   */
+  async confirmPhoneChange(
+    userId: string,
+    code: string,
+  ): Promise<UserResponse> {
+    const request = await this.prisma.phoneChangeRequest.findFirst({
+      where: { userId, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!request) {
+      throw new UnauthorizedException('Invalid or expired verification code');
+    }
+
+    const valid = await argon2.verify(request.codeHash, code);
+    if (!valid) {
+      throw new UnauthorizedException('Invalid or expired verification code');
+    }
+
+    // Re-check uniqueness at confirm time — another account may have claimed the
+    // number between request and confirm.
+    const taken = await this.prisma.wawuUser.findFirst({
+      where: { phone: request.newPhone, id: { not: userId } },
+    });
+    if (taken) {
+      // Consume the now-unusable request so the user can start a fresh one.
+      await this.prisma.phoneChangeRequest.deleteMany({ where: { userId } });
+      throw new ConflictException('Phone number already in use');
+    }
+
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.wawuUser.update({
+        where: { id: userId },
+        data: { phone: request.newPhone },
+      }),
+      this.prisma.phoneChangeRequest.deleteMany({ where: { userId } }),
+    ]);
+
+    return this.toUserResponse(updated);
+  }
+
   /**
    * Internal (X-Service-Key gated) account removal. Used to purge residual
    * or test accounts on request from WAWUAfrica-API ops tooling.
@@ -370,7 +481,9 @@ export class AuthService {
 
   // ── OTP (phone) ───────────────────────────────────────────────────────────────
 
-  async otpStart(phone: string): Promise<{ message: string; expiresIn: number }> {
+  async otpStart(
+    phone: string,
+  ): Promise<{ message: string; expiresIn: number }> {
     await this.otp.generateAndSend(phone);
     return { message: 'OTP sent', expiresIn: 300 };
   }
@@ -540,7 +653,9 @@ export class AuthService {
   }
 
   /** One-time activation for Category B users: set a password via emailed token. */
-  async activate(dto: ActivateDto): Promise<TokenPair & { user: UserResponse }> {
+  async activate(
+    dto: ActivateDto,
+  ): Promise<TokenPair & { user: UserResponse }> {
     const email = dto.email.toLowerCase().trim();
     const user = await this.prisma.wawuUser.findUnique({ where: { email } });
     if (!user) {

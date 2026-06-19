@@ -15,6 +15,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'crypto';
 import { AuthService } from './auth.service';
+import { ConfirmPhoneChangeDto } from './dto/confirm-phone-change.dto';
+import { RequestPhoneChangeDto } from './dto/request-phone-change.dto';
 import { UpdatePhoneDto } from './dto/update-phone.dto';
 import { UpdateTrustScoreDto } from './dto/update-trust-score.dto';
 import { UpdateVerificationTierDto } from './dto/update-verification-tier.dto';
@@ -96,6 +98,42 @@ export class InternalController {
   ) {
     this.assertServiceKey(serviceKey);
     return { data: await this.auth.updatePhone(userId, dto.phone) };
+  }
+
+  /**
+   * POST /internal/users/:userId/phone/request
+   * Body: { phone } — the new number. Step 1 of the verified phone-change flow:
+   * validates + uniqueness-checks the number, then emails a 6-digit OTP to the
+   * user's registered email (caller resolves the user's own id; never trusts a
+   * body-supplied id). Returns { sent: true } — never the code. 409 if taken.
+   * Same X-Service-Key guard as the other internal routes.
+   */
+  @Post('users/:userId/phone/request')
+  @HttpCode(HttpStatus.OK)
+  async requestPhoneChange(
+    @Param('userId') userId: string,
+    @Body() dto: RequestPhoneChangeDto,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.requestPhoneChange(userId, dto.phone) };
+  }
+
+  /**
+   * POST /internal/users/:userId/phone/confirm
+   * Body: { code } — the 6-digit OTP from step 1. Verifies the code, re-checks
+   * uniqueness, updates the user's phone, and returns the updated user. A
+   * bad/expired code is rejected (401). Same X-Service-Key guard.
+   */
+  @Post('users/:userId/phone/confirm')
+  @HttpCode(HttpStatus.OK)
+  async confirmPhoneChange(
+    @Param('userId') userId: string,
+    @Body() dto: ConfirmPhoneChangeDto,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.confirmPhoneChange(userId, dto.code) };
   }
 
   /**

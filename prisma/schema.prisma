@@ -56,6 +56,7 @@ model WawuUser {
   refreshTokens    RefreshToken[]
   resetTokens      PasswordResetToken[]
   activationTokens ActivationToken[]
+  phoneChangeRequests PhoneChangeRequest[]
   consents         Consent[]
 
   @@map("wawu_users")
@@ -98,6 +99,24 @@ model ActivationToken {
 
   @@index([userId])
   @@map("activation_tokens")
+}
+
+// Pending phone-number change awaiting email-OTP confirmation. The 6-digit code
+// is stored hashed (argon2); `newPhone` is the number the user wants to switch
+// to once they confirm. At most one pending request per user (the request step
+// replaces any prior pending row). Mirrors the *Token models' shape.
+model PhoneChangeRequest {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  newPhone  String   @map("new_phone")
+  codeHash  String   @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("phone_change_requests")
 }
 
 model OtpSession {

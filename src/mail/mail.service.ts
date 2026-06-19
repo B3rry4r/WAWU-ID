@@ -212,7 +212,7 @@ export class MailService {
       '<ul style="margin:0 0 16px;padding-left:20px;font-size:16px;line-height:1.6;color:#111111;">' +
         '<li style="margin:0 0 6px;">African Parents Deserve Their Own Country</li>' +
         '<li style="margin:0 0 6px;">Soft Life Is Expensive</li>' +
-        "<li style=\"margin:0 0 6px;\">I Know Somebody Is Africa's Biggest Industry</li>" +
+        '<li style="margin:0 0 6px;">I Know Somebody Is Africa\'s Biggest Industry</li>' +
         '<li style="margin:0 0 6px;">The Next African Unicorn Might Be in This Community</li>' +
         '<li style="margin:0 0 6px;">Farming Is Having a Glow-Up</li>' +
         '</ul>',
@@ -226,7 +226,8 @@ export class MailService {
       email,
       'Africa is talking. Come and say something.',
       this.layout({
-        preheader: 'Set your password and step into the new WAWUAfrica Community.',
+        preheader:
+          'Set your password and step into the new WAWUAfrica Community.',
         firstName,
         bodyHtml: body,
         cta: { label: 'Set My Password', url: activationUrl },
@@ -317,6 +318,45 @@ export class MailService {
         firstName,
         bodyHtml: body,
         cta: { label: 'Secure My Account', url: secureUrl },
+      }),
+    );
+  }
+
+  /**
+   * [VERIFICATION CODE] Your WAWUAfrica verification code
+   *
+   * Presents a 6-digit OTP prominently. No CTA link — the user types the code
+   * back into the app. Used both as the WhatsApp→email OTP fallback and by the
+   * phone-change flow. `purpose` lets the body name what the code is for (e.g.
+   * "verify your phone number change"); defaults to a generic verification line.
+   */
+  async sendOtpCode(
+    email: string,
+    code: string,
+    purpose?: string,
+  ): Promise<void> {
+    const reason = purpose ?? 'complete your verification';
+    const body = [
+      this.p(`Use the code below to ${this.escape(reason)}.`),
+      `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;">
+         <tr>
+           <td align="center" style="background-color:#f4f4f5;border-radius:12px;padding:20px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:34px;font-weight:700;letter-spacing:10px;color:#111111;">${this.escape(code)}</td>
+         </tr>
+       </table>`,
+      this.p(
+        'This code expires in 10 minutes. Please do not share it with anyone.',
+      ),
+      this.p(
+        'If you did not request this code, you can safely ignore this email. Your account remains secure.',
+      ),
+    ].join('');
+
+    await this.send(
+      email,
+      'Your WAWUAfrica verification code',
+      this.layout({
+        preheader: 'Your WAWUAfrica verification code (expires in 10 minutes).',
+        bodyHtml: body,
       }),
     );
   }
