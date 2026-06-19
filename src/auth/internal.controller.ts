@@ -15,6 +15,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'crypto';
 import { AuthService } from './auth.service';
+import { UpdatePhoneDto } from './dto/update-phone.dto';
 import { UpdateTrustScoreDto } from './dto/update-trust-score.dto';
 import { UpdateVerificationTierDto } from './dto/update-verification-tier.dto';
 
@@ -74,6 +75,27 @@ export class InternalController {
       );
     }
     return { data: await this.auth.updateTrustScore(userId, trustScore) };
+  }
+
+  /**
+   * PATCH /internal/users/:userId/phone
+   * Body: { phone } — digits, length >= 7. Corrects a user's phone number on
+   * request from the Hub (caller resolves the user's own id; never trusts a
+   * body-supplied id). Rejects a number already held by another account (409).
+   * Same X-Service-Key guard as the verification-tier setter.
+   *
+   * NOTE: no OTP verification in v1 (WhatsApp/SMS OTP delivery not configured);
+   * verifying ownership of the new number is a future enhancement.
+   */
+  @Patch('users/:userId/phone')
+  @HttpCode(HttpStatus.OK)
+  async updatePhone(
+    @Param('userId') userId: string,
+    @Body() dto: UpdatePhoneDto,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.updatePhone(userId, dto.phone) };
   }
 
   /**
