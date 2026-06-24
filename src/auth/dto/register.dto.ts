@@ -32,6 +32,11 @@ export class RegisterDto {
   @IsString()
   state?: string;
 
+  // Nullable, normalized to 'male'|'female' (anything else -> null) on persist.
+  @IsOptional()
+  @IsString()
+  gender?: string;
+
   // Captured by the onboarding form but stored on the hub profile, not WAWU ID.
   @IsOptional()
   @IsString()

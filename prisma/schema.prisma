@@ -33,6 +33,8 @@ model WawuUser {
   phone            String           @unique
   firstName        String?          @map("first_name")
   lastName         String?          @map("last_name")
+  // Nullable: legacy users have no gender. Canonical lowercase 'male'|'female'.
+  gender           String?
   country          String?
   state            String?
   // Nullable: OTP-only and Category B (onboarding-only) users have no password yet.

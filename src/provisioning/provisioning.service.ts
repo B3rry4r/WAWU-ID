@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { normalizeGender } from '../common/gender.util';
 import { SafProvisionDto } from './dto/saf-provision.dto';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,6 +14,7 @@ interface ExportRecord {
   phone: string | null;
   firstName: string | null;
   lastName: string | null;
+  gender: string | null;
   country: string | null;
   state: string | null;
   passwordHash: string | null;
@@ -163,6 +165,16 @@ export class ProvisioningService {
             },
           });
           if (existing) {
+            // Backfill gender on an already-provisioned account when it has none
+            // and the export carries one — mirrors the SAF idempotent path so a
+            // re-run can populate gender without touching anything else.
+            const normalizedGender = normalizeGender(record.gender);
+            if (!existing.gender && normalizedGender) {
+              await this.prisma.wawuUser.update({
+                where: { id: existing.id },
+                data: { gender: normalizedGender },
+              });
+            }
             skipped++;
             continue;
           }
@@ -173,6 +185,7 @@ export class ProvisioningService {
               phone,
               firstName: record.firstName,
               lastName: record.lastName,
+              gender: normalizeGender(record.gender),
               country: record.country,
               state: record.state,
               passwordHash: record.passwordHash ?? null,
@@ -239,6 +252,17 @@ export class ProvisioningService {
       // QR / attendance scan resolve correctly. No activation email is sent
       // because the account (and any password) already exists.
       await this.recordSafConsent(existing.id, dto.source);
+      // Gender backfill: this is what lets a backfill re-call provision/saf to
+      // set gender on already-provisioned accounts. Only fill when the account
+      // currently has none AND a (normalizable) gender was supplied — never
+      // overwrite an existing value.
+      const normalizedGender = normalizeGender(dto.gender);
+      if (!existing.gender && normalizedGender) {
+        await this.prisma.wawuUser.update({
+          where: { id: existing.id },
+          data: { gender: normalizedGender },
+        });
+      }
       // Resend path: re-deliver the (corrected) onboarding activation email to an
       // already-provisioned user by issuing a fresh one-time activation token.
       if (dto.resend && existing.email) {
@@ -267,6 +291,7 @@ export class ProvisioningService {
         phone,
         firstName: dto.firstName ?? null,
         lastName: dto.lastName ?? null,
+        gender: normalizeGender(dto.gender),
         country: 'Nigeria',
         passwordHash: null,
         verificationTier: 'basic',
