@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomBytes, randomInt } from 'crypto';
+import { normalizeGender } from '../common/gender.util';
 import { MailService } from '../mail/mail.service';
 import { OtpService } from '../otp/otp.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -25,6 +26,7 @@ export interface UserResponse {
   phone: string;
   country: string | null;
   state: string | null;
+  gender: string | null;
   occupation: string | null;
   verificationTier: string;
   trustScore: number;
@@ -63,6 +65,7 @@ export class AuthService {
       phone: user.phone,
       country: user.country,
       state: user.state ?? null,
+      gender: user.gender ?? null,
       occupation,
       verificationTier: user.verificationTier,
       trustScore: user.trustScore,
@@ -95,6 +98,7 @@ export class AuthService {
         lastName,
         country: dto.country,
         state: dto.state ?? null,
+        gender: normalizeGender(dto.gender),
         passwordHash: await argon2.hash(dto.password),
         verificationTier: 'basic',
         trustScore: 0,
@@ -274,6 +278,30 @@ export class AuthService {
     const updated = await this.prisma.wawuUser.update({
       where: { id: userId },
       data: { phone: trimmed },
+    });
+
+    return this.toUserResponse(updated);
+  }
+
+  /**
+   * Internal (X-Service-Key gated) gender update. The hub proxies a user's own
+   * profile gender edit here. Input is normalized to the canonical 'male'|'female'
+   * (anything unrecognised -> null), so this can both SET and CLEAR gender.
+   */
+  async updateGender(
+    userId: string,
+    gender: string | null,
+  ): Promise<UserResponse> {
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const updated = await this.prisma.wawuUser.update({
+      where: { id: userId },
+      data: { gender: normalizeGender(gender) },
     });
 
     return this.toUserResponse(updated);

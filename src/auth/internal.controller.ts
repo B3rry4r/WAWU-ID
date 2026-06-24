@@ -16,6 +16,7 @@ import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'crypto';
 import { AuthService } from './auth.service';
 import { ConfirmPhoneChangeDto } from './dto/confirm-phone-change.dto';
+import { UpdateGenderDto } from './dto/update-gender.dto';
 import { RequestPhoneChangeDto } from './dto/request-phone-change.dto';
 import { UpdatePhoneDto } from './dto/update-phone.dto';
 import { UpdateTrustScoreDto } from './dto/update-trust-score.dto';
@@ -98,6 +99,23 @@ export class InternalController {
   ) {
     this.assertServiceKey(serviceKey);
     return { data: await this.auth.updatePhone(userId, dto.phone) };
+  }
+
+  /**
+   * PATCH /internal/users/:userId/gender
+   * Body: { gender } — free string, normalized to 'male'|'female' (anything
+   * unrecognised, or omitted, clears it to null). The hub proxies a user's own
+   * profile gender edit here. Same X-Service-Key guard as the other routes.
+   */
+  @Patch('users/:userId/gender')
+  @HttpCode(HttpStatus.OK)
+  async updateGender(
+    @Param('userId') userId: string,
+    @Body() dto: UpdateGenderDto,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.updateGender(userId, dto.gender ?? null) };
   }
 
   /**
