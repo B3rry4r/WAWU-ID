@@ -19,40 +19,14 @@ export class OtpService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly mail: MailService,
-  ) {
-    // The OTP testing bypass must never be reachable in production. If the env
-    // var is present at startup in a prod deployment, log a loud security error
-    // rather than throwing — throwing here would crash the service on boot and
-    // cause an auth outage. The bypass is still NEVER honored in production: the
-    // runtime guard in generateAndSend() refuses to use it. This only flags the
-    // misconfiguration so it can be remediated.
-    if (this.isProduction() && this.config.get<string>('OTP_BYPASS_CODE')) {
-      this.logger.error(
-        'SECURITY: OTP_BYPASS_CODE is set while NODE_ENV=production. The ' +
-          'bypass is being IGNORED and will NOT be honored, but it MUST be ' +
-          'unset in the production environment immediately.',
-      );
-    }
-  }
-
-  private isProduction(): boolean {
-    return this.config.get<string>('NODE_ENV') === 'production';
-  }
+  ) {}
 
   /** Generate a 6-digit code, persist its hash, and send it via WhatsApp. */
   async generateAndSend(phone: string): Promise<void> {
-    // Testing bypass: when OTP_BYPASS_CODE is set, skip WhatsApp and store that
-    // fixed code as the OTP for any phone. Remove the env var to re-enable
-    // WhatsApp delivery. Hard-guarded: the bypass is ALWAYS ignored in
-    // production, even if the env var is somehow present (constructor also
-    // refuses to boot in that case). Dev/test behaviour is unchanged.
-    const bypassCode = this.config.get<string>('OTP_BYPASS_CODE');
-    if (bypassCode && !this.isProduction()) {
-      this.logger.warn('OTP bypass active — not for production');
-      await this.storeSession(phone, bypassCode);
-      return;
-    }
-
+    // NOTE: There is deliberately NO OTP bypass — not in prod, not in dev, not
+    // in test. Every OTP is a freshly generated 6-digit code delivered over the
+    // real channel (WhatsApp when configured, otherwise email). A fixed bypass
+    // code is a standing account-takeover hole, so the mechanism does not exist.
     const whatsappConfigured =
       !!this.config.get<string>('WHATSAPP_TOKEN') &&
       !!this.config.get<string>('WHATSAPP_PHONE_NUMBER_ID');
