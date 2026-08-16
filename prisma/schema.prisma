@@ -42,10 +42,14 @@ model WawuUser {
   verificationTier VerificationTier @default(basic) @map("verification_tier")
   trustScore       Int              @default(0) @map("trust_score")
   status           UserStatus       @default(active)
-  // Soft confirmation that the caller received a real code at this address --
-  // does NOT gate login/status (register() still issues a session
-  // immediately, matching this service's existing "active from creation"
-  // design), it's a display/trust signal only. See EmailVerificationCode.
+  // Confirms the caller received a real code at this address. register()
+  // still issues a session immediately (unchanged "active from creation"
+  // design -- status stays 'active' throughout), but AuthService.login()
+  // DOES gate on this for accounts that have an email: unverified means no
+  // new session via /auth/login. Rows that existed before this gate went
+  // live were backfilled to true (see migration
+  // 20260816020000_backfill_email_verified_for_existing_users) so it only
+  // blocks genuinely new, never-verified signups. See EmailVerificationCode.
   emailVerified    Boolean          @default(false) @map("email_verified")
 
   // Cross-platform reference links (see Brief Section 2)

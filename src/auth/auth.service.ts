@@ -146,6 +146,27 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    // Email/password accounts must confirm ownership of their address before
+    // a session is issued -- this is the actual enforcement point for the
+    // sign-up wizard's OTP step. Without this check here, emailVerified only
+    // ever gated the wizard's own client-side flow (SignUpFlow delays its
+    // signInUser() call until verifyOtp() succeeds): abandoning the wizard at
+    // the OTP screen and then using /sign-in directly bypassed it completely,
+    // since login() otherwise never looks at emailVerified at all. Scoped to
+    // `user.email` so phone-only accounts (otpVerify()'s find-or-create path,
+    // which never sets an email and so never goes through email
+    // verification) are unaffected. Every account that already existed before
+    // this gate went live was backfilled to emailVerified = true by migration
+    // 20260816020000_backfill_email_verified_for_existing_users, so this only
+    // ever blocks genuinely new, never-verified signups.
+    if (user.email && !user.emailVerified) {
+      throw new UnauthorizedException({
+        statusCode: 403,
+        code: 'EMAIL_NOT_VERIFIED',
+        message: 'Verify your email address before signing in.',
+      });
+    }
+
     // Fire-and-forget login-alert email. CTA points at the account-security
     // page (env-overridable, defaults to the reset-password route on APP_URL).
     if (user.email) {
@@ -545,14 +566,18 @@ export class AuthService {
 
   // ── email verification ──────────────────────────────────────────────────────
   //
-  // Confirms ownership of the email address a caller registered with. This is
-  // NOT a login gate (register() already issues a session immediately, and
-  // status stays 'active' throughout -- see WawuUser.emailVerified's doc
-  // comment) -- it's a soft, real confirmation step: a freshly generated
-  // 6-digit code, emailed via the same sendOtpCode() template already used
-  // for the phone-change flow, checked against an argon2 hash, no bypass
-  // (same "there is deliberately NO OTP bypass" principle OtpService states
-  // for phone OTP -- it applies here too, for the same reason).
+  // Confirms ownership of the email address a caller registered with. Not a
+  // status gate (register() still issues a session immediately, and status
+  // stays 'active' throughout -- see WawuUser.emailVerified's doc comment),
+  // but login() DOES require it for email/password accounts (see login()'s
+  // comment) -- otherwise the sign-up wizard's OTP step would only ever be
+  // enforced by the wizard's own client-side flow, trivially skippable by
+  // going to /auth/login directly with the same never-verified credentials.
+  // A freshly generated 6-digit code, emailed via the same sendOtpCode()
+  // template already used for the phone-change flow, checked against an
+  // argon2 hash, no bypass (same "there is deliberately NO OTP bypass"
+  // principle OtpService states for phone OTP -- it applies here too, for
+  // the same reason).
 
   async emailVerifyStart(
     email: string,
