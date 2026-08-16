@@ -40,7 +40,16 @@ export class MailService {
 
   async send(to: string, subject: string, html: string): Promise<void> {
     if (!this.resend) {
-      this.logger.warn(`[mail skipped] to=${to} subject="${subject}"`);
+      // No real mail transport configured (local dev without a Resend key).
+      // Log any 6-digit verification code so a developer can still complete
+      // a real end-to-end flow locally -- this is NOT a bypass (there is no
+      // fixed/guessable value here, only whatever code was actually just
+      // generated for this specific request) and this branch can never run
+      // in a real deployment, which always has RESEND_API_KEY set.
+      const code = html.match(/letter-spacing:10px;color:#111111;">(\d{6})</)?.[1];
+      this.logger.warn(
+        `[mail skipped] to=${to} subject="${subject}"${code ? ` code=${code}` : ''}`,
+      );
       return;
     }
     try {

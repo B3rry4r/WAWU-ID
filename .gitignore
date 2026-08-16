@@ -5,3 +5,7 @@ node_modules
 .env
 
 /generated/prisma
+
+# Local dev RS256 keypair (generated locally, never committed -- the
+# private key is a real secret even in a local sandbox instance)
+/keys

@@ -42,6 +42,11 @@ model WawuUser {
   verificationTier VerificationTier @default(basic) @map("verification_tier")
   trustScore       Int              @default(0) @map("trust_score")
   status           UserStatus       @default(active)
+  // Soft confirmation that the caller received a real code at this address --
+  // does NOT gate login/status (register() still issues a session
+  // immediately, matching this service's existing "active from creation"
+  // design), it's a display/trust signal only. See EmailVerificationCode.
+  emailVerified    Boolean          @default(false) @map("email_verified")
 
   // Cross-platform reference links (see Brief Section 2)
   onboardingRef       String? @map("onboarding_ref") @db.Uuid // -> onboarding_submissions.uuid
@@ -59,6 +64,7 @@ model WawuUser {
   resetTokens      PasswordResetToken[]
   activationTokens ActivationToken[]
   phoneChangeRequests PhoneChangeRequest[]
+  emailVerificationCodes EmailVerificationCode[]
   consents         Consent[]
 
   @@map("wawu_users")
@@ -130,6 +136,24 @@ model OtpSession {
 
   @@index([phone])
   @@map("otp_sessions")
+}
+
+// A freshly generated 6-digit code emailed to confirm ownership of the
+// address just used to register. Mirrors PhoneChangeRequest/OtpSession's
+// shape exactly. No bypass exists (same principle as OtpService's own
+// "there is deliberately NO OTP bypass" doc comment) -- every code is
+// real, freshly generated, and delivered over the real (Resend) channel.
+model EmailVerificationCode {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  codeHash  String   @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_codes")
 }
 
 // A published version of a legal document (privacy, terms, …). The actual text

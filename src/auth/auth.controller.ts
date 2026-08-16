@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { ActivateDto } from './dto/activate.dto';
+import { EmailVerifyConfirmDto } from './dto/email-verify-confirm.dto';
+import { EmailVerifyStartDto } from './dto/email-verify-start.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { OtpStartDto } from './dto/otp-start.dto';
@@ -47,6 +49,20 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async otpVerify(@Body() dto: OtpVerifyDto) {
     return { data: await this.auth.otpVerify(dto.phone, dto.code) };
+  }
+
+  @Post('email/verify/start')
+  @HttpCode(HttpStatus.OK)
+  async emailVerifyStart(@Body() dto: EmailVerifyStartDto) {
+    return { data: await this.auth.emailVerifyStart(dto.email) };
+  }
+
+  @Post('email/verify/confirm')
+  @HttpCode(HttpStatus.OK)
+  async emailVerifyConfirm(@Body() dto: EmailVerifyConfirmDto) {
+    return {
+      data: await this.auth.emailVerifyConfirm(dto.email, dto.code),
+    };
   }
 
   @Post('activate')

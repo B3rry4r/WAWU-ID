@@ -35,6 +35,7 @@ export interface UserResponse {
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 const PHONE_CHANGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const EMAIL_VERIFY_TTL_MS = 5 * 60 * 1000; // 5 minutes, matches OtpService's phone-OTP TTL
 
 @Injectable()
 export class AuthService {
@@ -540,6 +541,80 @@ export class AuthService {
 
     const pair = await this.tokens.issueTokens(user);
     return { ...pair, user: this.toUserResponse(user) };
+  }
+
+  // ── email verification ──────────────────────────────────────────────────────
+  //
+  // Confirms ownership of the email address a caller registered with. This is
+  // NOT a login gate (register() already issues a session immediately, and
+  // status stays 'active' throughout -- see WawuUser.emailVerified's doc
+  // comment) -- it's a soft, real confirmation step: a freshly generated
+  // 6-digit code, emailed via the same sendOtpCode() template already used
+  // for the phone-change flow, checked against an argon2 hash, no bypass
+  // (same "there is deliberately NO OTP bypass" principle OtpService states
+  // for phone OTP -- it applies here too, for the same reason).
+
+  async emailVerifyStart(
+    email: string,
+  ): Promise<{ message: string; expiresIn: number }> {
+    const user = await this.prisma.wawuUser.findUnique({ where: { email } });
+    if (!user) {
+      throw new NotFoundException('No account found with this email');
+    }
+    if (user.emailVerified) {
+      return { message: 'Email already verified', expiresIn: 0 };
+    }
+
+    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+    const codeHash = await argon2.hash(code);
+
+    // At most one pending code per user: drop any prior one before inserting
+    // (mirrors requestPhoneChange's "replace, don't accumulate" pattern).
+    await this.prisma.$transaction([
+      this.prisma.emailVerificationCode.deleteMany({
+        where: { userId: user.id },
+      }),
+      this.prisma.emailVerificationCode.create({
+        data: {
+          userId: user.id,
+          codeHash,
+          expiresAt: new Date(Date.now() + EMAIL_VERIFY_TTL_MS),
+        },
+      }),
+    ]);
+
+    await this.mail.sendOtpCode(email, code, 'verify your email address');
+
+    return { message: 'Verification code sent', expiresIn: 300 };
+  }
+
+  async emailVerifyConfirm(
+    email: string,
+    code: string,
+  ): Promise<TokenPair & { user: UserResponse }> {
+    const user = await this.prisma.wawuUser.findUnique({ where: { email } });
+    if (!user) {
+      throw new UnauthorizedException('Invalid or expired code');
+    }
+
+    const pending = await this.prisma.emailVerificationCode.findFirst({
+      where: { userId: user.id, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!pending || !(await argon2.verify(pending.codeHash, code))) {
+      throw new UnauthorizedException('Invalid or expired code');
+    }
+
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.wawuUser.update({
+        where: { id: user.id },
+        data: { emailVerified: true },
+      }),
+      this.prisma.emailVerificationCode.delete({ where: { id: pending.id } }),
+    ]);
+
+    const pair = await this.tokens.issueTokens(updated);
+    return { ...pair, user: this.toUserResponse(updated) };
   }
 
   // ── password reset + activation ────────────────────────────────────────────
