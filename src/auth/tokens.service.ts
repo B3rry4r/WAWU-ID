@@ -68,10 +68,17 @@ export class TokensService {
 
   /** Issue a fresh access+refresh pair and persist the refresh-token hash. */
   async issueTokens(user: WawuUser): Promise<TokenPair> {
+    // `issuer` lets every resource server confirm a token came from THIS
+    // identity service rather than merely being signed by some key in the
+    // JWKS. Emitted only when configured, and additive: verifiers that do not
+    // check `iss` ignore it, so this is safe to ship ahead of them.
+    const issuer = this.config.get<string>('JWT_ISSUER');
+
     const accessToken = await this.jwt.signAsync(this.buildAccessPayload(user), {
       algorithm: 'RS256',
       expiresIn: this.config.getOrThrow<string>('JWT_EXPIRES_IN') as ExpiresIn,
       keyid: this.jwks.kid,
+      ...(issuer ? { issuer } : {}),
     });
 
     const refreshToken = await this.jwt.signAsync(

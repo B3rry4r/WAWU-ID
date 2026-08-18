@@ -2,7 +2,36 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 
-const DEFAULT_HEADER_URL = 'https://production.wawuafrica.com/email-header.png';
+/**
+ * The email header banner.
+ *
+ * This pointed at `production.wawuafrica.com`, which is the previous PHP
+ * platform's domain. That host is being decommissioned, so every email sent
+ * after it goes offline would have rendered with a broken header image. It now
+ * points at the new web app, which serves /email-header.png with the current
+ * trademarked mark. EMAIL_HEADER_URL still overrides it per environment.
+ */
+/**
+ * Mirrors the web app's tokens.css so an email and the app it belongs to look
+ * like the same product. Flattened to solid hex: email clients cannot be
+ * trusted with rgba() over a background.
+ */
+const MAIL_COLORS = {
+  page: '#0B0A0D',
+  card: '#131316',
+  tag: '#201F27',
+  hairline: '#26262B',
+  accent: '#9411C9',
+  borderAccent: '#5B2478',
+  onAccent: '#FFFFFF',
+  textPrimary: '#FEFEFE',
+  textSecondary: '#A5A4AE',
+  textMuted: '#6E6D78',
+  textDisabled: '#4A4952',
+} as const;
+
+const DEFAULT_HEADER_URL =
+  'https://wawu-web-production.up.railway.app/email-header.png';
 
 /** Options for the shared WAWUAfrica email layout. */
 interface LayoutOptions {
@@ -46,7 +75,7 @@ export class MailService {
       // fixed/guessable value here, only whatever code was actually just
       // generated for this specific request) and this branch can never run
       // in a real deployment, which always has RESEND_API_KEY set.
-      const code = html.match(/letter-spacing:10px;color:#111111;">(\d{6})</)?.[1];
+      const code = html.match(/letter-spacing:10px;color:[^;"]+;">(\d{6})</)?.[1];
       this.logger.warn(
         `[mail skipped] to=${to} subject="${subject}"${code ? ` code=${code}` : ''}`,
       );
@@ -71,21 +100,30 @@ export class MailService {
   }
 
   /**
-   * Render the shared, mobile-friendly WAWUAfrica email shell: header image at
-   * the very top, white content card on a light background, optional dark pill
-   * CTA, and the WAWUAfrica-only footer. No framework/Resend/Node chrome.
+   * The shared WAWUAfrica email shell.
+   *
+   * This was a light-themed template left over from the previous platform:
+   * grey page, white card, black pill buttons. The product it belongs to is
+   * dark and purple, so every auth email a new user received looked like it
+   * came from a different company than the app they had just signed up to.
+   *
+   * The palette here mirrors src/app/tokens.css in the web app exactly, with
+   * one concession to email clients: borders and tints are flattened to solid
+   * hex, because rgba() over a background is unreliable in Outlook and older
+   * Gmail. `color-scheme` is declared so clients do not "helpfully" invert an
+   * already-dark design.
    */
   private layout(opts: LayoutOptions): string {
     const year = new Date().getFullYear();
     const greeting = opts.firstName
-      ? `<p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:#111111;">Hello ${this.escape(opts.firstName)},</p>`
+      ? `<p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:${MAIL_COLORS.textPrimary};font-weight:600;">Hello ${this.escape(opts.firstName)},</p>`
       : '';
     const cta = opts.cta
       ? `
-            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 8px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 4px;">
               <tr>
-                <td align="center" bgcolor="#111111" style="border-radius:999px;">
-                  <a href="${opts.cta.url}" target="_blank" style="display:inline-block;padding:14px 36px;font-size:16px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:999px;background-color:#111111;">${this.escape(opts.cta.label)}</a>
+                <td align="center" bgcolor="${MAIL_COLORS.accent}" style="border-radius:999px;">
+                  <a href="${opts.cta.url}" target="_blank" style="display:inline-block;padding:15px 38px;font-size:16px;font-weight:600;color:${MAIL_COLORS.onAccent};text-decoration:none;border-radius:999px;background-color:${MAIL_COLORS.accent};">${this.escape(opts.cta.label)}</a>
                 </td>
               </tr>
             </table>`
@@ -97,34 +135,36 @@ export class MailService {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="x-apple-disable-message-reformatting" />
+<meta name="color-scheme" content="dark" />
+<meta name="supported-color-schemes" content="dark" />
 <title>WAWUAfrica</title>
 </head>
-<body style="margin:0;padding:0;background-color:#f4f4f5;-webkit-text-size-adjust:100%;">
-<span style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f4f4f5;">${this.escape(opts.preheader)}</span>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f4f5;">
+<body style="margin:0;padding:0;background-color:${MAIL_COLORS.page};-webkit-text-size-adjust:100%;">
+<span style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:${MAIL_COLORS.page};">${this.escape(opts.preheader)}</span>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:${MAIL_COLORS.page};">
   <tr>
-    <td align="center" style="padding:24px 12px;">
+    <td align="center" style="padding:28px 12px 36px;">
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;">
         <tr>
-          <td style="padding:0;">
-            <img src="${this.headerUrl}" alt="WAWUAfrica" width="600" style="display:block;width:100%;max-width:600px;height:auto;margin:0 auto;border:0;" />
+          <td style="padding:0;line-height:0;">
+            <img src="${this.headerUrl}" alt="WAWU" width="600" style="display:block;width:100%;max-width:600px;height:auto;margin:0 auto;border:0;border-radius:14px 14px 0 0;" />
           </td>
         </tr>
         <tr>
-          <td style="background-color:#ffffff;border-radius:0 0 12px 12px;padding:36px 40px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <td bgcolor="${MAIL_COLORS.card}" style="background-color:${MAIL_COLORS.card};border-radius:0 0 14px 14px;border-left:1px solid ${MAIL_COLORS.hairline};border-right:1px solid ${MAIL_COLORS.hairline};border-bottom:1px solid ${MAIL_COLORS.hairline};padding:36px 40px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
             ${greeting}
-            <div style="font-size:16px;line-height:1.6;color:#333333;">
+            <div style="font-size:16px;line-height:1.65;color:${MAIL_COLORS.textSecondary};">
               ${opts.bodyHtml}
             </div>
             ${cta}
           </td>
         </tr>
         <tr>
-          <td style="padding:28px 40px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#888888;text-align:center;">
-            <p style="margin:0;font-weight:600;color:#111111;">The WAWUAfrica Team</p>
+          <td style="padding:26px 40px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:${MAIL_COLORS.textMuted};text-align:center;">
+            <p style="margin:0;font-weight:600;color:${MAIL_COLORS.textPrimary};">The WAWUAfrica Team</p>
             <p style="margin:6px 0 0;">We Build Ecosystems. Not Programs.</p>
             <p style="margin:2px 0 0;">Where Africa Connects, Shares, Learns and Grows.</p>
-            <p style="margin:14px 0 0;color:#aaaaaa;">&copy; ${year} WAWUAfrica. All rights reserved.</p>
+            <p style="margin:16px 0 0;color:${MAIL_COLORS.textDisabled};">&copy; ${year} WAWUAfrica. All rights reserved.</p>
           </td>
         </tr>
       </table>
@@ -136,7 +176,7 @@ export class MailService {
   }
 
   private p(text: string): string {
-    return `<p style="margin:0 0 16px;">${text}</p>`;
+    return `<p style="margin:0 0 16px;color:${MAIL_COLORS.textSecondary};">${text}</p>`;
   }
 
   // ── boss templates ──────────────────────────────────────────────────────────
@@ -347,9 +387,9 @@ export class MailService {
     const reason = purpose ?? 'complete your verification';
     const body = [
       this.p(`Use the code below to ${this.escape(reason)}.`),
-      `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;">
+      `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:24px auto;">
          <tr>
-           <td align="center" style="background-color:#f4f4f5;border-radius:12px;padding:20px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:34px;font-weight:700;letter-spacing:10px;color:#111111;">${this.escape(code)}</td>
+           <td align="center" bgcolor="${MAIL_COLORS.tag}" style="background-color:${MAIL_COLORS.tag};border:1px solid ${MAIL_COLORS.borderAccent};border-radius:14px;padding:22px 34px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:34px;font-weight:700;letter-spacing:10px;color:${MAIL_COLORS.textPrimary};">${this.escape(code)}</td>
          </tr>
        </table>`,
       this.p(
