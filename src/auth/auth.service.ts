@@ -198,6 +198,50 @@ export class AuthService {
    * account to `basic` (or any non-trusted tier). Takes effect on the next
    * token refresh; already-issued JWTs keep their old tier until then.
    */
+  /**
+   * Bulk identity lookup for a trusted sibling service.
+   *
+   * WAWU ID owns a person's name and their verification tier; the Hub API owns
+   * their creator data. Rendering a list of creators therefore needs both, and
+   * until now there was no way to ask for the identity half in bulk — which is
+   * why the consumer app's creator lists were fabricated mock people rather
+   * than the real accounts sitting in this table.
+   *
+   * Returns ONLY what a public creator card shows: display name and badge
+   * tier. Deliberately not email, phone, gender, or anything else on the row —
+   * a service key is not consent, and the caller does not need them to draw a
+   * card. Unknown ids are omitted rather than returned as nulls, so the caller
+   * distinguishes "no such user" from "user with no name".
+   */
+  async lookupPublicIdentities(ids: string[]): Promise<
+    Array<{
+      id: string;
+      firstName: string | null;
+      lastName: string | null;
+      verificationTier: string;
+    }>
+  > {
+    const unique = [...new Set(ids)];
+    if (unique.length === 0) return [];
+
+    const users = await this.prisma.wawuUser.findMany({
+      where: { id: { in: unique } },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        verificationTier: true,
+      },
+    });
+
+    return users.map((u) => ({
+      id: u.id,
+      firstName: u.firstName,
+      lastName: u.lastName,
+      verificationTier: u.verificationTier,
+    }));
+  }
+
   async updateVerificationTier(
     userId: string,
     tier: string,

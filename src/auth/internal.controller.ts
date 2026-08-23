@@ -21,6 +21,7 @@ import { RequestPhoneChangeDto } from './dto/request-phone-change.dto';
 import { UpdatePhoneDto } from './dto/update-phone.dto';
 import { UpdateTrustScoreDto } from './dto/update-trust-score.dto';
 import { UpdateVerificationTierDto } from './dto/update-verification-tier.dto';
+import { LookupUsersDto } from './dto/lookup-users.dto';
 
 /**
  * Service-to-service endpoints. Guarded by the shared X-Service-Key header
@@ -33,6 +34,25 @@ export class InternalController {
     private readonly auth: AuthService,
     private readonly config: ConfigService,
   ) {}
+
+  /**
+   * POST /internal/users/lookup
+   * Body: { ids: string[] } (max 100)
+   *
+   * Display name + verification tier for a set of users, so a sibling service
+   * can render real people in a list instead of inventing them. POST rather
+   * than GET because the id set is the request body, not a URL a proxy or
+   * access log should be carrying.
+   */
+  @Post('users/lookup')
+  @HttpCode(HttpStatus.OK)
+  async lookupUsers(
+    @Body() dto: LookupUsersDto,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.lookupPublicIdentities(dto.ids) };
+  }
 
   /**
    * PATCH /internal/users/:userId/verification-tier
