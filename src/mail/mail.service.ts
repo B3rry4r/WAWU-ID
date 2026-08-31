@@ -182,6 +182,52 @@ export class MailService {
   // ── boss templates ──────────────────────────────────────────────────────────
 
   /** [WELCOME] You are In. Welcome to WAWUAfrica */
+  /**
+   * The Ditto Music distribution invite, sent when a Pro Max creator OPTS IN.
+   *
+   * Opting in is a separate, explicit act from paying for Pro Max. The plan
+   * includes access to distribution; it does not enrol anybody in a
+   * third-party service on their behalf. Nothing here fires on payment — only
+   * on the creator pressing the button.
+   *
+   * The link is also shown in the app the moment they opt in. This email is a
+   * copy they can come back to, not the only way to reach it: a signup link a
+   * creator can only retrieve from an inbox is one lost email away from being
+   * a benefit they paid for and cannot use.
+   */
+  async sendDittoDistributionInvite(
+    email: string,
+    firstName: string | null | undefined,
+    signupUrl: string,
+    discountPercent: number,
+  ): Promise<void> {
+    const body = [
+      this.p(
+        'You have opted in to music distribution through Ditto Music, included with your Pro Max plan.',
+      ),
+      this.p(
+        `Use the link below to create your Ditto account. Your WAWUAfrica plan takes ${discountPercent}% off Ditto's price — the discount is applied through this link, so use it rather than signing up directly.`,
+      ),
+      this.p(
+        'From there you can release unlimited music as one artist to 150+ platforms, keep your royalty splits automatic, and see your fan analytics.',
+      ),
+      this.p(
+        'This link stays in your subscription settings on WAWUAfrica too, so you do not need to keep this email.',
+      ),
+    ].join('');
+
+    await this.send(
+      email,
+      'Your Ditto Music distribution link',
+      this.layout({
+        preheader: `Your Pro Max music distribution link, ${discountPercent}% off.`,
+        firstName,
+        bodyHtml: body,
+        cta: { label: 'Set up Ditto Music', url: signupUrl },
+      }),
+    );
+  }
+
   async sendWelcome(email: string, firstName?: string | null): Promise<void> {
     const body = [
       this.p('Welcome to WAWUAfrica. We are so glad to have you with us.'),

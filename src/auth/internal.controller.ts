@@ -22,6 +22,7 @@ import { UpdatePhoneDto } from './dto/update-phone.dto';
 import { UpdateTrustScoreDto } from './dto/update-trust-score.dto';
 import { UpdateVerificationTierDto } from './dto/update-verification-tier.dto';
 import { LookupUsersDto } from './dto/lookup-users.dto';
+import { DittoInviteDto } from './dto/ditto-invite.dto';
 
 /**
  * Service-to-service endpoints. Guarded by the shared X-Service-Key header
@@ -215,6 +216,27 @@ export class InternalController {
   ) {
     this.assertServiceKey(serviceKey);
     return { data: await this.auth.markPendingDeletion(userId) };
+  }
+
+  /**
+   * POST /internal/users/:userId/ditto-invite
+   * Body: { signupUrl, discountPercent }
+   *
+   * Sends the Ditto Music distribution email. Deliberately NOT a general mail
+   * relay: the hub cannot choose the subject, the body, or the recipient — it
+   * names a user and the link, and this service decides the rest. A generic
+   * "send this HTML to this address" route behind a shared key is an open
+   * relay the moment that key leaks.
+   */
+  @Post('users/:userId/ditto-invite')
+  @HttpCode(HttpStatus.OK)
+  async dittoInvite(
+    @Headers('x-service-key') serviceKey: string,
+    @Param('userId') userId: string,
+    @Body() dto: DittoInviteDto,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return this.auth.sendDittoInvite(userId, dto.signupUrl, dto.discountPercent);
   }
 
   private assertServiceKey(provided?: string): void {

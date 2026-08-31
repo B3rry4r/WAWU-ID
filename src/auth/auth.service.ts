@@ -852,4 +852,34 @@ export class AuthService {
     const pair = await this.tokens.issueTokens(updated);
     return { ...pair, user: this.toUserResponse(updated) };
   }
+
+  /**
+   * Emails a Pro Max creator their Ditto Music distribution link.
+   *
+   * Called service-to-service by the hub when the creator OPTS IN — never on
+   * payment. The hub owns the plan and the opt-in record; WAWU ID owns the
+   * address and the name, and is the only service here with a mail transport.
+   *
+   * Returns whether an address existed. A phone-OTP signup legitimately has no
+   * email, and the caller needs to know that so it can show the link in the
+   * app instead of reporting a message that was never sent.
+   */
+  async sendDittoInvite(
+    userId: string,
+    signupUrl: string,
+    discountPercent: number,
+  ): Promise<{ emailed: boolean }> {
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true },
+    });
+    if (!user?.email) return { emailed: false };
+    await this.mail.sendDittoDistributionInvite(
+      user.email,
+      user.firstName,
+      signupUrl,
+      discountPercent,
+    );
+    return { emailed: true };
+  }
 }
