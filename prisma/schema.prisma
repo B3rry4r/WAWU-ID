@@ -32,6 +32,14 @@ model WawuUser {
   email            String?          @unique
   phone            String           @unique
   firstName        String?          @map("first_name")
+  /// Optional, and its own column rather than part of the surname.
+  ///
+  /// Sign-up used to take one "Full name" box and split it on the first
+  /// space, so "Excel Patrick Obi" was stored with lastName "Patrick Obi".
+  /// That is not a spelling preference: KYC is a manual review against a
+  /// government ID, and a surname carrying a middle name does not match the
+  /// document it is checked against.
+  middleName       String?          @map("middle_name")
   lastName         String?          @map("last_name")
   // Nullable: legacy users have no gender. Canonical lowercase 'male'|'female'.
   gender           String?

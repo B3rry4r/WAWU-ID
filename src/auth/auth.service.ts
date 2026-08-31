@@ -49,10 +49,33 @@ export class AuthService {
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
-  private splitName(fullName: string): { firstName: string; lastName: string } {
-    const parts = fullName.trim().split(/\s+/);
+  /**
+   * The name to store, preferring the parts the caller gave.
+   *
+   * Splitting a single string is the FALLBACK, not the path — and it is a
+   * lossy one: taking the first token as the given name and everything after
+   * it as the surname turns "Excel Patrick Obi" into a surname of "Patrick
+   * Obi". Callers that collect the parts separately (the web sign-up form)
+   * send them and skip the guess entirely.
+   */
+  private resolveName(dto: {
+    fullName?: string;
+    firstName?: string;
+    middleName?: string;
+    lastName?: string;
+  }): { firstName: string; middleName: string | null; lastName: string } {
+    const first = dto.firstName?.trim();
+    const last = dto.lastName?.trim();
+    if (first || last) {
+      return {
+        firstName: first ?? '',
+        middleName: dto.middleName?.trim() || null,
+        lastName: last ?? '',
+      };
+    }
+    const parts = (dto.fullName ?? '').trim().split(/\s+/).filter(Boolean);
     const firstName = parts.shift() ?? '';
-    return { firstName, lastName: parts.join(' ') };
+    return { firstName, middleName: null, lastName: parts.join(' ') };
   }
 
   private toUserResponse(
@@ -61,7 +84,9 @@ export class AuthService {
   ): UserResponse {
     return {
       id: user.id,
-      fullName: [user.firstName, user.lastName].filter(Boolean).join(' '),
+      fullName: [user.firstName, user.middleName, user.lastName]
+        .filter(Boolean)
+        .join(' '),
       email: user.email,
       phone: user.phone,
       country: user.country,
@@ -90,12 +115,13 @@ export class AuthService {
       );
     }
 
-    const { firstName, lastName } = this.splitName(dto.fullName);
+    const { firstName, middleName, lastName } = this.resolveName(dto);
     const user = await this.prisma.wawuUser.create({
       data: {
         email,
         phone: dto.phone,
         firstName,
+        middleName,
         lastName,
         country: dto.country,
         state: dto.state ?? null,
