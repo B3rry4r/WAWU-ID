@@ -908,4 +908,37 @@ export class AuthService {
     );
     return { emailed: true };
   }
+
+  /**
+   * Updates the three name parts.
+   *
+   * Names live in WAWU ID, not the hub, so the hub proxies a user's own edit
+   * here. There was no route for this at all: the profile screen carried a
+   * DISABLED name field explaining that names "can't be changed here yet",
+   * which was true and is the sort of thing that stays true for years.
+   *
+   * KYC is a manual review against a government ID, so a mismatched name
+   * holds up verification and payouts. Somebody who mistyped their surname at
+   * sign-up needs a way to correct it without support.
+   */
+  async updateName(
+    userId: string,
+    parts: { firstName: string; middleName?: string; lastName: string },
+  ): Promise<UserResponse> {
+    const user = await this.prisma.wawuUser.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const updated = await this.prisma.wawuUser.update({
+      where: { id: userId },
+      data: {
+        firstName: parts.firstName.trim(),
+        // An empty string CLEARS it. Omitting the field leaves it alone,
+        // which is a different intent and has to stay distinguishable.
+        middleName:
+          parts.middleName === undefined ? undefined : parts.middleName.trim() || null,
+        lastName: parts.lastName.trim(),
+      },
+    });
+    return this.toUserResponse(updated);
+  }
 }

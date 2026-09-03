@@ -19,6 +19,7 @@ export interface AccessTokenPayload {
   email: string | null;
   phone: string;
   firstName: string | null;
+  middleName: string | null;
   lastName: string | null;
   country: string | null;
   verificationTier: string;
@@ -52,6 +53,10 @@ export class TokensService {
       email: user.email,
       phone: user.phone,
       firstName: user.firstName,
+      // Carried so the profile screen can prefill all three name parts
+      // without a second round trip. Null for the phone-first signups that
+      // never supplied one.
+      middleName: user.middleName,
       lastName: user.lastName,
       country: user.country,
       verificationTier: user.verificationTier,

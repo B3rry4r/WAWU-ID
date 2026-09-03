@@ -17,6 +17,7 @@ import { timingSafeEqual } from 'crypto';
 import { AuthService } from './auth.service';
 import { ConfirmPhoneChangeDto } from './dto/confirm-phone-change.dto';
 import { UpdateGenderDto } from './dto/update-gender.dto';
+import { UpdateNameDto } from './dto/update-name.dto';
 import { RequestPhoneChangeDto } from './dto/request-phone-change.dto';
 import { UpdatePhoneDto } from './dto/update-phone.dto';
 import { UpdateTrustScoreDto } from './dto/update-trust-score.dto';
@@ -128,6 +129,24 @@ export class InternalController {
    * unrecognised, or omitted, clears it to null). The hub proxies a user's own
    * profile gender edit here. Same X-Service-Key guard as the other routes.
    */
+  /**
+   * PATCH /internal/users/:userId/name
+   * Body: { firstName, middleName?, lastName }
+   *
+   * The hub proxies a user's own name edit here — names are WAWU ID's, not
+   * the hub's. Same X-Service-Key guard as the other internal routes.
+   */
+  @Patch('users/:userId/name')
+  @HttpCode(HttpStatus.OK)
+  async updateName(
+    @Param('userId') userId: string,
+    @Body() dto: UpdateNameDto,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.updateName(userId, dto) };
+  }
+
   @Patch('users/:userId/gender')
   @HttpCode(HttpStatus.OK)
   async updateGender(
