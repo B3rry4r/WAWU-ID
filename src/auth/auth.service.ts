@@ -133,11 +133,16 @@ export class AuthService {
       },
     });
 
-    // Fire-and-forget the branded WAWUAfrica welcome email; never block or fail
-    // registration on mail delivery (MailService already swallows send errors).
-    if (user.email) {
-      void this.mail.sendWelcome(user.email, user.firstName);
-    }
+    // NO WELCOME EMAIL HERE.
+    //
+    // It used to send at registration, which is before the address has been
+    // proven and before the person can even sign in — login refuses an
+    // unverified email. So "Welcome to WAWUAfrica, see you inside" arrived in
+    // the same breath as the verification code, saying they were in when they
+    // were not, and it arrived at all for addresses that were typos and would
+    // never be verified.
+    //
+    // It is sent once the code is confirmed instead. See confirmEmailCode.
 
     const pair = await this.tokens.issueTokens(user);
     return { ...pair, user: this.toUserResponse(user, dto.occupation ?? null) };
@@ -700,6 +705,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired code');
     }
 
+    const wasVerified = user.emailVerified;
     const [updated] = await this.prisma.$transaction([
       this.prisma.wawuUser.update({
         where: { id: user.id },
@@ -707,6 +713,13 @@ export class AuthService {
       }),
       this.prisma.emailVerificationCode.delete({ where: { id: pending.id } }),
     ]);
+
+    // The welcome lands HERE: the address is proven, the account is usable,
+    // and "see you inside" is finally true. Guarded on the transition so
+    // re-verifying (a second device, a stale tab) does not send it twice.
+    if (!wasVerified && updated.email) {
+      void this.mail.sendWelcome(updated.email, updated.firstName);
+    }
 
     const pair = await this.tokens.issueTokens(updated);
     return { ...pair, user: this.toUserResponse(updated) };
