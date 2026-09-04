@@ -903,6 +903,34 @@ export class AuthService {
    * email, and the caller needs to know that so it can show the link in the
    * app instead of reporting a message that was never sent.
    */
+  /**
+   * Sends the one warning before an unpaid creator account is removed.
+   *
+   * The hub decides WHO is unpaid and WHEN the deadline is - it owns
+   * subscription state. This service owns the address and the wording, the
+   * same split as sendDittoInvite: naming a user and a deadline is not the
+   * same as handing a sibling service the ability to mail arbitrary text to
+   * arbitrary people.
+   */
+  async sendUnpaidDeletionWarning(
+    userId: string,
+    hoursLeft: number,
+    planUrl: string,
+  ): Promise<{ emailed: boolean }> {
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true },
+    });
+    if (!user?.email) return { emailed: false };
+    await this.mail.sendUnpaidDeletionWarning(
+      user.email,
+      user.firstName,
+      hoursLeft,
+      planUrl,
+    );
+    return { emailed: true };
+  }
+
   async sendDittoInvite(
     userId: string,
     signupUrl: string,

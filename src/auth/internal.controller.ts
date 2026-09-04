@@ -24,6 +24,7 @@ import { UpdateTrustScoreDto } from './dto/update-trust-score.dto';
 import { UpdateVerificationTierDto } from './dto/update-verification-tier.dto';
 import { LookupUsersDto } from './dto/lookup-users.dto';
 import { DittoInviteDto } from './dto/ditto-invite.dto';
+import { UnpaidWarningDto } from './dto/unpaid-warning.dto';
 
 /**
  * Service-to-service endpoints. Guarded by the shared X-Service-Key header
@@ -256,6 +257,25 @@ export class InternalController {
   ) {
     this.assertServiceKey(serviceKey);
     return this.auth.sendDittoInvite(userId, dto.signupUrl, dto.discountPercent);
+  }
+
+  /**
+   * POST /internal/users/:userId/unpaid-warning
+   * Body: { hoursLeft, planUrl }
+   *
+   * The single warning email before the hub removes an unpaid creator
+   * account. Same reasoning as ditto-invite: the hub names the user and the
+   * deadline, this service decides the subject, the wording and the address.
+   */
+  @Post('users/:userId/unpaid-warning')
+  @HttpCode(HttpStatus.OK)
+  async unpaidWarning(
+    @Headers('x-service-key') serviceKey: string,
+    @Param('userId') userId: string,
+    @Body() dto: UnpaidWarningDto,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.sendUnpaidDeletionWarning(userId, dto.hoursLeft, dto.planUrl) };
   }
 
   private assertServiceKey(provided?: string): void {

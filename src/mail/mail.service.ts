@@ -228,6 +228,44 @@ export class MailService {
     );
   }
 
+  /**
+   * The one warning before an unpaid creator account is removed.
+   *
+   * Sent once, roughly a day before deletion. It has to be specific about
+   * three things or it is not a warning: what will go, when, and the single
+   * action that stops it. No marketing, no plan comparison - somebody about
+   * to lose an account should not have to read a pitch to find the deadline.
+   */
+  async sendUnpaidDeletionWarning(
+    email: string,
+    firstName: string | null | undefined,
+    hoursLeft: number,
+    planUrl: string,
+  ): Promise<void> {
+    const body = [
+      this.p(
+        `Your WAWUAfrica creator account has not been activated with a plan, and it is due to be removed in about ${hoursLeft} hours.`,
+      ),
+      this.p(
+        'Picking a tier keeps the account and unlocks uploading straight away. If you do nothing, the account and the details you entered are deleted, and you would need to sign up again from scratch.',
+      ),
+      this.p(
+        'If you signed up by mistake, you can safely ignore this. Nothing has been charged.',
+      ),
+    ].join('');
+
+    await this.send(
+      email,
+      `Your WAWUAfrica account closes in ${hoursLeft} hours`,
+      this.layout({
+        preheader: `Pick a plan to keep your account. About ${hoursLeft} hours left.`,
+        firstName,
+        bodyHtml: body,
+        cta: { label: 'Pick a plan', url: planUrl },
+      }),
+    );
+  }
+
   async sendWelcome(email: string, firstName?: string | null): Promise<void> {
     const body = [
       this.p('Welcome to WAWUAfrica. We are so glad to have you with us.'),
