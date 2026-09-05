@@ -30,8 +30,18 @@ const MAIL_COLORS = {
   textDisabled: '#4A4952',
 } as const;
 
-const DEFAULT_HEADER_URL =
-  'https://wawu-web-production.up.railway.app/email-header.png';
+/**
+ * The banner at the top of every WAWUAfrica email.
+ *
+ * This pointed at a Railway host that answers 404. The app has been on Vercel
+ * behind wawuafrica.com for a long time, so the image in every email we have
+ * ever sent was a broken-image box, whatever the client.
+ *
+ * It has to be an absolute, publicly reachable URL: mail clients fetch it from
+ * their own network with no session, so anything behind auth, or on a host
+ * that no longer exists, silently renders as nothing.
+ */
+const DEFAULT_HEADER_URL = 'https://wawuafrica.com/email-header.png';
 
 /** Options for the shared WAWUAfrica email layout. */
 interface LayoutOptions {
