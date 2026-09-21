@@ -20,7 +20,11 @@
     "pagination": { "currentPage": 1, "nextPage": 2, "perPage": 20, "total": 120 } }
   ```
 - Timestamps: ISO 8601 strings
-- Trust tier enum: `basic | verified_user | verified_business | certified_professional | trusted_partner`
+- Verification: two independent ticks, not a tier. Every user on the wire carries
+  `verification: { creator: { verified, expiresAt }, professional: { verified, expiresAt } }`.
+  See Section 1, PATCH /internal/users/:wawuId/verification.
+- Trust tier enum (LEGACY, still on the wire, read `verification` instead):
+  `basic | verified_user | verified_business | certified_professional | trusted_partner | official`
 - Post status enum: `published | pending | rejected`
 - User status enum: `active | suspended | banned`
 
@@ -157,18 +161,59 @@ Response 200:
 }
 ```
 
+### INTERNAL — PATCH /internal/users/:wawuId/verification
+Header: `X-Service-Key: <secret>`
+
+The two-tick model. There is no ladder and no Trust Score: there are exactly
+TWO paid annual verifications, and they are INDEPENDENT, because one person can
+hold both roles.
+
+| Verification | Price | Tick |
+|---|---|---|
+| creator | NGN 4,999 / year | purple |
+| professional | NGN 9,999 / year | green |
+
+One call grants, renews or revokes ONE tick. `expiresAt` null on a grant is a
+perpetual, admin-granted tick (that is what the backfill from the old ladder
+produces). There is no `verified` field to send: whether a tick draws is
+derived from the expiry server-side on every read.
+
+```json
+Request: { "tick": "creator", "granted": true, "expiresAt": "2027-09-21T00:00:00.000Z" }
+Request: { "tick": "professional", "granted": false }
+Response 200: { "data": { "id": "uuid", "fullName": "Ada Okeke", "verification": {
+  "creator":      { "verified": true,  "expiresAt": "2027-09-21T00:00:00.000Z" },
+  "professional": { "verified": false, "expiresAt": null }
+}, "verificationTier": "basic", "trustScore": 0, "status": "active" } }
+```
+
+`verification` is carried on every WAWU ID response that returns a user (login,
+register, OTP verify, refresh, the internal lookup) and in the access-token
+claims. The legacy `verificationTier` and `trustScore` fields stay on the wire
+unchanged so an older Hub build keeps parsing these responses while both sides
+deploy.
+
 ### INTERNAL — PATCH /internal/users/:wawuId/trust-score
 Header: `X-Service-Key: <secret>`
+
+SUPERSEDED by PATCH /internal/users/:wawuId/verification. Trust Score is gone as
+a product surface and nothing replaces it. The route stays reachable, writing
+only the legacy `trust_score` column that no read path consults, so an older Hub
+calling it mid-deploy gets a 200 rather than a 404.
 ```json
-Request: { "delta": 50, "reason": "Course completed: Digital Marketing" }
-Response 200: { "data": { "newScore": 870, "newTier": "Gold" } }
+Request: { "trustScore": 82 }
+Response 200: { "data": { "id": "uuid", "trustScore": 82, ... } }
 ```
 
 ### INTERNAL — PATCH /internal/users/:wawuId/verification-tier
 Header: `X-Service-Key: <secret>`
+
+SUPERSEDED by PATCH /internal/users/:wawuId/verification, for the same reason
+and on the same terms as trust-score above. Writes only the legacy
+`verification_tier` column.
 ```json
-Request: { "tier": "verified_user" }
-Response 200: { "data": { "tier": "verified_user" } }
+Request: { "tier": "certified_professional" }
+Response 200: { "data": { "id": "uuid", "verificationTier": "certified_professional", ... } }
 ```
 
 ---

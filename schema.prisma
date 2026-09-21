@@ -1,0 +1,242 @@
+// WAWU ID — Prisma schema
+// Unified identity + auth service for the WAWUAfrica ecosystem.
+// wawu_users schema derived from the Master Build Brief, Section 2.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// LEGACY. Superseded by the two-tick model: the four `*_verified_at` /
+/// `*_verified_until` columns on WawuUser, derived through
+/// `deriveVerification()` in src/common/verification.util.ts.
+///
+/// The enum and its column stay on the row deliberately. Dropping a column a
+/// still-running older instance selects is how a deploy takes production down,
+/// so this is the expand half of expand/contract: the new columns are written
+/// and read, `verification_tier` is written only by the legacy internal route
+/// and read by nothing. The drop is a separate migration once no deployed
+/// instance selects it.
+enum VerificationTier {
+  basic
+  verified_user
+  verified_business
+  certified_professional
+  trusted_partner
+  official
+}
+
+enum UserStatus {
+  active
+  suspended
+  banned
+  pending_deletion
+}
+
+model WawuUser {
+  id               String           @id @default(uuid()) @db.Uuid
+  // Nullable: phone-OTP-first signups (e.g. WAWUBasket flow) have no email/name yet.
+  email            String?          @unique
+  phone            String           @unique
+  firstName        String?          @map("first_name")
+  /// Optional, and its own column rather than part of the surname.
+  ///
+  /// Sign-up used to take one "Full name" box and split it on the first
+  /// space, so "Excel Patrick Obi" was stored with lastName "Patrick Obi".
+  /// That is not a spelling preference: KYC is a manual review against a
+  /// government ID, and a surname carrying a middle name does not match the
+  /// document it is checked against.
+  middleName       String?          @map("middle_name")
+  lastName         String?          @map("last_name")
+  // Nullable: legacy users have no gender. Canonical lowercase 'male'|'female'.
+  gender           String?
+  country          String?
+  state            String?
+  // Nullable: OTP-only and Category B (onboarding-only) users have no password yet.
+  passwordHash     String?          @map("password_hash")
+  /// LEGACY, still written by PATCH /internal/users/:userId/verification-tier
+  /// and still carried on the wire so an older Hub keeps parsing a login
+  /// response. Read `verification` instead. See VerificationTier's comment.
+  verificationTier VerificationTier @default(basic) @map("verification_tier")
+  /// LEGACY. Trust Score is gone as a product surface; the column stays for
+  /// the same expand/contract reason as verificationTier.
+  trustScore       Int              @default(0) @map("trust_score")
+
+  // ── The two ticks ─────────────────────────────────────────────────────────
+  //
+  // Two INDEPENDENT annual verifications, because one person can be both a
+  // creator and a professional. Purple tick: creator, NGN 4,999/year. Green
+  // tick: professional, NGN 9,999/year. Prices are the Hub's to hold, not
+  // this service's -- WAWU ID stores only who holds what, and until when.
+  //
+  // There is no `verified` boolean on purpose. Whether a tick draws is
+  // derived from the expiry by deriveVerification() in
+  // src/common/verification.util.ts, server-side, every read. A stored
+  // boolean is a boolean that goes stale the minute an expiry passes.
+  //
+  // `*VerifiedUntil` NULL while `*VerifiedAt` is set = perpetual, admin
+  // granted. That is what the backfill from the old ladder produces.
+  creatorVerifiedAt         DateTime? @map("creator_verified_at")
+  creatorVerifiedUntil      DateTime? @map("creator_verified_until")
+  professionalVerifiedAt    DateTime? @map("professional_verified_at")
+  professionalVerifiedUntil DateTime? @map("professional_verified_until")
+  status           UserStatus       @default(active)
+  // Confirms the caller received a real code at this address. register()
+  // still issues a session immediately (unchanged "active from creation"
+  // design -- status stays 'active' throughout), but AuthService.login()
+  // DOES gate on this for accounts that have an email: unverified means no
+  // new session via /auth/login. Rows that existed before this gate went
+  // live were backfilled to true (see migration
+  // 20260816020000_backfill_email_verified_for_existing_users) so it only
+  // blocks genuinely new, never-verified signups. See EmailVerificationCode.
+  emailVerified    Boolean          @default(false) @map("email_verified")
+
+  // Cross-platform reference links (see Brief Section 2)
+  onboardingRef       String? @map("onboarding_ref") @db.Uuid // -> onboarding_submissions.uuid
+  wawuafricaAppUserId Int?    @map("wawuafrica_app_user_id") // -> WAWUAfrica users.id
+  beautyUserId        Int?    @map("beauty_user_id") // -> WAWUBeauty users.id
+  basketUserId        String? @map("basket_user_id") @db.Uuid // -> WAWUBasket users.id
+
+  // Set when an account enters the cross-ecosystem deletion grace period
+  // (status=pending_deletion); the hub finalizes ~48h later via the DELETE route.
+  deletedAt     DateTime?           @map("deleted_at")
+
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+  refreshTokens    RefreshToken[]
+  resetTokens      PasswordResetToken[]
+  activationTokens ActivationToken[]
+  phoneChangeRequests PhoneChangeRequest[]
+  emailVerificationCodes EmailVerificationCode[]
+  consents         Consent[]
+
+  @@map("wawu_users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model ActivationToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("activation_tokens")
+}
+
+// Pending phone-number change awaiting email-OTP confirmation. The 6-digit code
+// is stored hashed (argon2); `newPhone` is the number the user wants to switch
+// to once they confirm. At most one pending request per user (the request step
+// replaces any prior pending row). Mirrors the *Token models' shape.
+model PhoneChangeRequest {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  newPhone  String   @map("new_phone")
+  codeHash  String   @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("phone_change_requests")
+}
+
+model OtpSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  phone     String
+  codeHash  String   @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([phone])
+  @@map("otp_sessions")
+}
+
+// A freshly generated 6-digit code emailed to confirm ownership of the
+// address just used to register. Mirrors PhoneChangeRequest/OtpSession's
+// shape exactly. No bypass exists (same principle as OtpService's own
+// "there is deliberately NO OTP bypass" doc comment) -- every code is
+// real, freshly generated, and delivered over the real (Resend) channel.
+model EmailVerificationCode {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  codeHash  String   @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_codes")
+}
+
+// A published version of a legal document (privacy, terms, …). The actual text
+// lives on the canonical web page at `url`; this row is the version-of-record so
+// every app/client reads one source and consent can be tracked per version.
+// To publish an update: insert a new row (new version) — the current one is the
+// published row with the latest effectiveDate.
+model Policy {
+  id            String   @id @default(uuid()) @db.Uuid
+  slug          String // 'privacy', 'terms', …
+  version       String // e.g. '2026.06.01'
+  title         String
+  url           String // canonical web page rendering the full text
+  effectiveDate DateTime @map("effective_date")
+  summary       String? // optional changelog / what changed
+  published     Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([slug, version])
+  @@index([slug, published])
+  @@map("policies")
+}
+
+// Immutable consent ledger: who accepted which policy version, when, from where.
+// One row per acceptance — the audit trail for NDPA/NDPR and re-consent flows.
+model Consent {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  slug       String
+  version    String
+  source     String? // 'web' | 'wawubasket' | 'wawubeauty' | 'saf' | …
+  ip         String?
+  acceptedAt DateTime @default(now()) @map("accepted_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, slug])
+  @@index([slug, version])
+  @@map("consents")
+}
