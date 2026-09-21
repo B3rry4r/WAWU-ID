@@ -10,6 +10,16 @@ datasource db {
   provider = "postgresql"
 }
 
+/// LEGACY. Superseded by the two-tick model: the four `*_verified_at` /
+/// `*_verified_until` columns on WawuUser, derived through
+/// `deriveVerification()` in src/common/verification.util.ts.
+///
+/// The enum and its column stay on the row deliberately. Dropping a column a
+/// still-running older instance selects is how a deploy takes production down,
+/// so this is the expand half of expand/contract: the new columns are written
+/// and read, `verification_tier` is written only by the legacy internal route
+/// and read by nothing. The drop is a separate migration once no deployed
+/// instance selects it.
 enum VerificationTier {
   basic
   verified_user
@@ -47,8 +57,32 @@ model WawuUser {
   state            String?
   // Nullable: OTP-only and Category B (onboarding-only) users have no password yet.
   passwordHash     String?          @map("password_hash")
+  /// LEGACY, still written by PATCH /internal/users/:userId/verification-tier
+  /// and still carried on the wire so an older Hub keeps parsing a login
+  /// response. Read `verification` instead. See VerificationTier's comment.
   verificationTier VerificationTier @default(basic) @map("verification_tier")
+  /// LEGACY. Trust Score is gone as a product surface; the column stays for
+  /// the same expand/contract reason as verificationTier.
   trustScore       Int              @default(0) @map("trust_score")
+
+  // ── The two ticks ─────────────────────────────────────────────────────────
+  //
+  // Two INDEPENDENT annual verifications, because one person can be both a
+  // creator and a professional. Purple tick: creator, NGN 4,999/year. Green
+  // tick: professional, NGN 9,999/year. Prices are the Hub's to hold, not
+  // this service's -- WAWU ID stores only who holds what, and until when.
+  //
+  // There is no `verified` boolean on purpose. Whether a tick draws is
+  // derived from the expiry by deriveVerification() in
+  // src/common/verification.util.ts, server-side, every read. A stored
+  // boolean is a boolean that goes stale the minute an expiry passes.
+  //
+  // `*VerifiedUntil` NULL while `*VerifiedAt` is set = perpetual, admin
+  // granted. That is what the backfill from the old ladder produces.
+  creatorVerifiedAt         DateTime? @map("creator_verified_at")
+  creatorVerifiedUntil      DateTime? @map("creator_verified_until")
+  professionalVerifiedAt    DateTime? @map("professional_verified_at")
+  professionalVerifiedUntil DateTime? @map("professional_verified_until")
   status           UserStatus       @default(active)
   // Confirms the caller received a real code at this address. register()
   // still issues a session immediately (unchanged "active from creation"

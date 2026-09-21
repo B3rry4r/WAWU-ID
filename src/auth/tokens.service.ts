@@ -7,6 +7,10 @@ import { randomBytes, randomUUID } from 'crypto';
 import type { SignOptions } from 'jsonwebtoken';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwksService } from '../jwks/jwks.service';
+import {
+  deriveVerification,
+  type VerificationState,
+} from '../common/verification.util';
 
 type ExpiresIn = NonNullable<SignOptions['expiresIn']>;
 
@@ -22,8 +26,23 @@ export interface AccessTokenPayload {
   middleName: string | null;
   lastName: string | null;
   country: string | null;
+  /**
+   * LEGACY. Still claimed so a resource server built against the old ladder
+   * keeps verifying tokens through this deploy. Read `verification`.
+   */
   verificationTier: string;
+  /** LEGACY. Trust Score is gone as a product surface. */
   trustScore: number;
+  /**
+   * The two ticks, derived at issue time. A resource server can draw a badge
+   * straight off the token without a round trip.
+   *
+   * It is a SNAPSHOT: an access token lives 15 minutes, so a tick revoked or
+   * an expiry crossed inside that window is still claimed by an already-issued
+   * token. Anything that gates money or hosting rights reads the user row,
+   * not this claim.
+   */
+  verification: VerificationState;
   status: string;
   platformRefs: {
     wawuafricaAppUserId: number | null;
@@ -61,6 +80,7 @@ export class TokensService {
       country: user.country,
       verificationTier: user.verificationTier,
       trustScore: user.trustScore,
+      verification: deriveVerification(user),
       status: user.status,
       platformRefs: {
         wawuafricaAppUserId: user.wawuafricaAppUserId,

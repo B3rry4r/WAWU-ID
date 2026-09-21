@@ -10,6 +10,12 @@ import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomBytes, randomInt } from 'crypto';
 import { normalizeGender } from '../common/gender.util';
+import {
+  deriveVerification,
+  TICK_COLUMNS,
+  type VerificationState,
+  type VerificationTickName,
+} from '../common/verification.util';
 import { MailService } from '../mail/mail.service';
 import { OtpService } from '../otp/otp.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -28,8 +34,15 @@ export interface UserResponse {
   state: string | null;
   gender: string | null;
   occupation: string | null;
+  /**
+   * LEGACY, kept on the wire unchanged so an older Hub build keeps parsing
+   * this response while both are deploying. Read `verification`.
+   */
   verificationTier: string;
+  /** LEGACY. Trust Score is gone as a product surface. */
   trustScore: number;
+  /** The two ticks, derived server-side. This is the field to read. */
+  verification: VerificationState;
   status: string;
 }
 
@@ -95,6 +108,7 @@ export class AuthService {
       occupation,
       verificationTier: user.verificationTier,
       trustScore: user.trustScore,
+      verification: deriveVerification(user),
       status: user.status,
     };
   }
@@ -221,14 +235,72 @@ export class AuthService {
     return this.tokens.rotateRefreshToken(refreshToken);
   }
 
-  // ── internal: tier management (X-Service-Key gated) ─────────────────────────
+  // ── internal: verification (X-Service-Key gated) ───────────────────────────
 
   /**
-   * Stamp a user's verification tier (admin/partner provisioning path).
-   * Only ever ELEVATES to a trusted tier — this path can never downgrade an
-   * account to `basic` (or any non-trusted tier). Takes effect on the next
-   * token refresh; already-issued JWTs keep their old tier until then.
+   * Grant, renew or revoke ONE of the two ticks.
+   *
+   * The Hub calls this when the annual fee is paid (grant), when a renewal
+   * clears (grant again, new expiry) and when an admin withdraws a badge
+   * (revoke). WAWU ID stores who holds what and until when; the Hub holds the
+   * prices and the payment.
+   *
+   * A grant stamps the moment it happened and the expiry it was bought to.
+   * `expiresAt` null is a perpetual, admin-granted tick, which is what a
+   * grandfathered row backfilled from the old ladder looks like.
+   *
+   * A revoke clears BOTH columns rather than back-dating the expiry, so the
+   * row reads as never verified instead of as lapsed. A lapsed tick and a
+   * withdrawn one are the same thing to every caller: no tick.
+   *
+   * The two ticks are independent, so this touches exactly one of them and
+   * leaves the other alone. Takes effect on the next token refresh for
+   * anything reading the JWT claim; every server-side read is immediate.
    */
+  async setVerification(
+    userId: string,
+    tick: VerificationTickName,
+    granted: boolean,
+    expiresAt?: string | null,
+  ): Promise<UserResponse> {
+    const columns = TICK_COLUMNS[tick];
+    if (!columns) {
+      throw new BadRequestException(
+        `tick must be one of: ${Object.keys(TICK_COLUMNS).join(', ')}`,
+      );
+    }
+
+    let until: Date | null = null;
+    if (granted && expiresAt != null) {
+      until = new Date(expiresAt);
+      if (Number.isNaN(until.getTime())) {
+        throw new BadRequestException('expiresAt must be an ISO 8601 date');
+      }
+    }
+
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const updated = await this.prisma.wawuUser.update({
+      where: { id: userId },
+      data: granted
+        ? { [columns.at]: new Date(), [columns.until]: until }
+        : { [columns.at]: null, [columns.until]: null },
+    });
+
+    // A granted tick is an approved account. Same fire-and-forget as the
+    // legacy tier path: mail never blocks the write.
+    if (granted && updated.email) {
+      void this.mail.sendAccountApproved(updated.email, updated.firstName);
+    }
+
+    return this.toUserResponse(updated);
+  }
+
   /**
    * Bulk identity lookup for a trusted sibling service.
    *
@@ -249,11 +321,17 @@ export class AuthService {
       id: string;
       firstName: string | null;
       lastName: string | null;
+      /** LEGACY, carried unchanged. Read `verification`. */
       verificationTier: string;
+      verification: VerificationState;
     }>
   > {
     const unique = [...new Set(ids)];
     if (unique.length === 0) return [];
+
+    // One `now` for the whole batch, so two users in the same list cannot
+    // straddle an expiry and disagree about what time it is.
+    const now = new Date();
 
     const users = await this.prisma.wawuUser.findMany({
       where: { id: { in: unique } },
@@ -262,6 +340,10 @@ export class AuthService {
         firstName: true,
         lastName: true,
         verificationTier: true,
+        creatorVerifiedAt: true,
+        creatorVerifiedUntil: true,
+        professionalVerifiedAt: true,
+        professionalVerifiedUntil: true,
       },
     });
 
@@ -270,9 +352,24 @@ export class AuthService {
       firstName: u.firstName,
       lastName: u.lastName,
       verificationTier: u.verificationTier,
+      verification: deriveVerification(u, now),
     }));
   }
 
+  // ── internal: legacy tier management (X-Service-Key gated) ─────────────────
+  //
+  // SUPERSEDED by setVerification() and the two-tick columns. The two methods
+  // below still write `verification_tier` / `trust_score` so an older Hub
+  // build calling the old routes mid-deploy gets a 200 instead of a 404. They
+  // are the contract half of expand/contract, and nothing reads what they
+  // write: the ticks on every response come from deriveVerification().
+
+  /**
+   * Stamp a user's verification tier (admin/partner provisioning path).
+   * Only ever ELEVATES to a trusted tier — this path can never downgrade an
+   * account to `basic` (or any non-trusted tier). Takes effect on the next
+   * token refresh; already-issued JWTs keep their old tier until then.
+   */
   async updateVerificationTier(
     userId: string,
     tier: string,

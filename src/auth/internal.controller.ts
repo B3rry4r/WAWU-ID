@@ -22,6 +22,7 @@ import { RequestPhoneChangeDto } from './dto/request-phone-change.dto';
 import { UpdatePhoneDto } from './dto/update-phone.dto';
 import { UpdateTrustScoreDto } from './dto/update-trust-score.dto';
 import { UpdateVerificationTierDto } from './dto/update-verification-tier.dto';
+import { UpdateVerificationDto } from './dto/update-verification.dto';
 import { LookupUsersDto } from './dto/lookup-users.dto';
 import { DittoInviteDto } from './dto/ditto-invite.dto';
 import { UnpaidWarningDto } from './dto/unpaid-warning.dto';
@@ -58,10 +59,51 @@ export class InternalController {
   }
 
   /**
+   * PATCH /internal/users/:userId/verification
+   * Body: { tick: 'creator' | 'professional', granted: boolean,
+   *         expiresAt?: string | null }
+   *
+   * The Hub grants a tick when the annual fee clears, renews it with a new
+   * `expiresAt`, and revokes it when an admin withdraws the badge. One call,
+   * one tick: the purple (creator) and green (professional) verifications are
+   * independent because one person can hold both roles.
+   *
+   * `expiresAt` null on a grant is a perpetual, admin-granted tick. There is
+   * no `verified` field to send: whether a tick draws is derived from the
+   * expiry on every read, server-side, so a caller cannot assert it.
+   *
+   * Returns the updated user, carrying `verification` (the two ticks) and the
+   * legacy `verificationTier` field unchanged.
+   */
+  @Patch('users/:userId/verification')
+  @HttpCode(HttpStatus.OK)
+  async updateVerification(
+    @Param('userId') userId: string,
+    @Body() dto: UpdateVerificationDto,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return {
+      data: await this.auth.setVerification(
+        userId,
+        dto.tick,
+        dto.granted,
+        dto.expiresAt ?? null,
+      ),
+    };
+  }
+
+  /**
    * PATCH /internal/users/:userId/verification-tier
    * Body: { tier } or { verificationTier } ∈
    *   { certified_professional, trusted_partner, official }.
    * Used by WAWUAfrica-API admin partner provisioning. Never downgrades.
+   *
+   * SUPERSEDED by PATCH /internal/users/:userId/verification above. Kept
+   * routable so an older Hub build calling it mid-deploy gets a 200 rather
+   * than a 404; it writes only the legacy `verification_tier` column, which
+   * no read path consults. Same expand/contract reasoning as the migration
+   * that left that column in place.
    */
   @Patch('users/:userId/verification-tier')
   @HttpCode(HttpStatus.OK)
@@ -85,6 +127,11 @@ export class InternalController {
    * Body: { trustScore } or { score } — integer in [0, 100].
    * Called by the Hub to keep a user's authoritative trust score in sync. Same
    * X-Service-Key guard as the verification-tier setter.
+   *
+   * SUPERSEDED: Trust Score is gone as a product surface, and nothing replaces
+   * it. Two ticks are the whole verification story, via PATCH
+   * /internal/users/:userId/verification. Kept routable for the same reason as
+   * the verification-tier route: a 200 beats a 404 while both sides deploy.
    */
   @Patch('users/:userId/trust-score')
   @HttpCode(HttpStatus.OK)
