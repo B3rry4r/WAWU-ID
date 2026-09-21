@@ -1,0 +1,85 @@
+name: Deploy WAWU ID
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # One at a time. Two overlapping rsyncs into the same directory, each
+  # followed by a migration, is how a half-written release gets restarted.
+  group: deploy-wawu-id
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wawu_id_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/wawu_id_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx prisma migrate deploy
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  deploy:
+    name: Deploy to droplet
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load SSH key
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Pinned, not StrictHostKeyChecking=no — otherwise CI would accept
+          # any host answering on that IP, which defeats the check.
+          printf '%s\n' "${{ secrets.DROPLET_HOST_KEY }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Rsync to droplet
+        run: |
+          rsync -az --delete \
+            --exclude '.git' --exclude 'node_modules' --exclude 'dist' \
+            --exclude 'generated' --exclude '.env' --exclude 'keys' \
+            -e "ssh -i ~/.ssh/id_ed25519" \
+            ./ wawu@${{ secrets.DROPLET_HOST }}:/srv/wawu/wawu-id/
+
+      - name: Install, migrate, build, restart
+        run: |
+          ssh -i ~/.ssh/id_ed25519 wawu@${{ secrets.DROPLET_HOST }} \
+            'bash /srv/wawu/wawu-id/deploy/deploy.sh wawu-id'
+
+      - name: Prove it is actually serving
+        # JWKS is the right probe: it 200s only if the RS256 keys loaded and
+        # the app booted. A deploy that goes green on `systemctl restart`
+        # returning is not evidence of anything.
+        run: |
+          for i in $(seq 1 15); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              https://${{ secrets.ID_DOMAIN }}/.well-known/jwks.json || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 4
+          done
+          echo "WAWU ID did not serve JWKS after the deploy." >&2
+          exit 1
