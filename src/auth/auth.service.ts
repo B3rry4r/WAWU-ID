@@ -945,7 +945,18 @@ export class AuthService {
   async forgotPassword(
     identifier: string,
     method: 'sms' | 'email' = 'sms',
-  ): Promise<{ message: string }> {
+  ): Promise<{ message: string; expiresInSeconds?: number }> {
+    // The link's lifetime, told to a caller that asked for a link (AUTH-01:
+    // the app's "Check your email" screen shows it). It is the same figure in
+    // every answer to such a request, whether or not an account exists or a
+    // mail went out, so it reveals nothing. A request for the SMS code is
+    // answered exactly as before.
+    const sent = {
+      message: 'If an account exists, a reset code has been sent.',
+      ...(method === 'email'
+        ? { expiresInSeconds: RESET_TOKEN_TTL_MS / 1000 }
+        : {}),
+    };
     const user = await this.prisma.wawuUser.findFirst({
       where: {
         OR: [
@@ -959,9 +970,7 @@ export class AuthService {
       if (method === 'email' && user.email) {
         // A mobile sign-up's email was never proven: no mail goes to it.
         if (!this.provenEmail(user)) {
-          return {
-            message: 'If an account exists, a reset code has been sent.',
-          };
+          return sent;
         }
         // Web hub: email a one-time reset link via Resend.
         const rawToken = randomBytes(32).toString('hex');
@@ -987,7 +996,7 @@ export class AuthService {
       }
     }
 
-    return { message: 'If an account exists, a reset code has been sent.' };
+    return sent;
   }
 
   /**

@@ -237,9 +237,13 @@ Response 200: { "data": { "accessToken": "eyJ...", "refreshToken": "eyJ..." } }
 
 ### POST /auth/forgot-password
 ```json
-Request: { "email": "ada@email.com" }
-Response 200: { "data": { "message": "Reset link sent if account exists" } }
+Request: { "identifier": "ada@email.com", "method": "email" }
+Response 200: { "data": { "message": "If an account exists, a reset code has been sent.", "expiresInSeconds": 3600 } }
 ```
+`method: "email"` mails a link to the web reset page. The answer carries
+`expiresInSeconds`, the link's real lifetime, and it is the same whether or not
+an account exists. Without `method` (or `"sms"`) a code is sent instead and the
+answer has `message` only.
 
 ### POST /auth/reset-password
 ```json
