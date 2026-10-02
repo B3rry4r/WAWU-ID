@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -10,7 +11,7 @@ import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomBytes, randomInt } from 'crypto';
 import { normalizeGender } from '../common/gender.util';
-import { normalisePhone } from '../common/phone.util';
+import { normalisePhone, phoneVariants } from '../common/phone.util';
 import {
   deriveVerification,
   TICK_COLUMNS,
@@ -136,12 +137,59 @@ export class AuthService {
     };
   }
 
+  /**
+   * A mobile sign-up whose phone code was never entered holds no session, and
+   * nothing a route does on its behalf (confirming its email, a reset, the
+   * phone OTP) may change it first. TokensService.issueTokens refuses the
+   * session as well; this is called before anything is written. Accounts
+   * with no pending sign-up (all web and legacy rows) pass untouched.
+   */
+  private refuseIfPending(user: {
+    phoneVerifiedAt: Date | null;
+    phoneVerification?: unknown;
+  }): void {
+    if (!user.phoneVerifiedAt && user.phoneVerification) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'PHONE_NOT_CONFIRMED',
+        message: 'Confirm your phone number to finish signing up.',
+      });
+    }
+  }
+
+  /** Remove the expired, never-confirmed mobile sign-ups that hold this email or phone. */
+  private async releaseExpiredSignups(
+    email: string,
+    phone: string,
+  ): Promise<void> {
+    const typed = normalisePhone(phone);
+    await this.prisma.wawuUser.deleteMany({
+      where: {
+        OR: [
+          { email },
+          {
+            phone: {
+              in: [...new Set([phone, ...(typed ? phoneVariants(typed) : [])])],
+            },
+          },
+        ],
+        phoneVerifiedAt: null,
+        phoneVerification: { is: { signupExpiresAt: { lt: new Date() } } },
+      },
+    });
+  }
+
   // ── email + password ────────────────────────────────────────────────────────
 
   async register(
     dto: RegisterDto,
   ): Promise<TokenPair & { user: UserResponse }> {
     const email = dto.email.toLowerCase().trim();
+
+    // A mobile sign-up nobody confirmed within its 24 hours has released its
+    // email and phone (R-36); it must not answer 409 to a web sign-up. Only
+    // rows that are expired pending sign-ups are removed.
+    await this.releaseExpiredSignups(email, dto.phone);
 
     const existing = await this.prisma.wawuUser.findFirst({
       where: { OR: [{ email }, { phone: dto.phone }] },
@@ -197,6 +245,7 @@ export class AuthService {
           { phone: dto.identifier.trim() },
         ],
       },
+      include: { phoneVerification: true },
     });
 
     if (!user) {
@@ -207,6 +256,7 @@ export class AuthService {
       if (normalised) {
         user = await this.prisma.wawuUser.findFirst({
           where: { phone: normalised, phoneVerifiedAt: { not: null } },
+          include: { phoneVerification: true },
         });
       }
     }
@@ -256,6 +306,8 @@ export class AuthService {
         message: 'Verify your email address before signing in.',
       });
     }
+
+    this.refuseIfPending(user);
 
     // Fire-and-forget login-alert email. CTA points at the account-security
     // page (env-overridable, defaults to the reset-password route on APP_URL).
@@ -527,9 +579,7 @@ export class AuthService {
 
     const updated = await this.prisma.wawuUser.update({
       where: { id: userId },
-      // A different number has not been proven by anyone, so the proof for the
-      // old one goes with it.
-      data: { phone: trimmed, phoneVerifiedAt: null },
+      data: { phone: trimmed },
     });
 
     return this.toUserResponse(updated);
@@ -662,7 +712,7 @@ export class AuthService {
     const [updated] = await this.prisma.$transaction([
       this.prisma.wawuUser.update({
         where: { id: userId },
-        data: { phone: request.newPhone, phoneVerifiedAt: null },
+        data: { phone: request.newPhone },
       }),
       this.prisma.phoneChangeRequest.deleteMany({ where: { userId } }),
     ]);
@@ -778,7 +828,12 @@ export class AuthService {
     }
 
     // Find or create a phone-only user (e.g. WAWUBasket-style signup).
-    let user = await this.prisma.wawuUser.findUnique({ where: { phone } });
+    const existing = await this.prisma.wawuUser.findUnique({
+      where: { phone },
+      include: { phoneVerification: true },
+    });
+    if (existing) this.refuseIfPending(existing);
+    let user: WawuUser | null = existing;
     if (!user) {
       user = await this.prisma.wawuUser.create({
         data: {
@@ -847,7 +902,10 @@ export class AuthService {
     email: string,
     code: string,
   ): Promise<TokenPair & { user: UserResponse }> {
-    const user = await this.prisma.wawuUser.findUnique({ where: { email } });
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { email },
+      include: { phoneVerification: true },
+    });
     if (!user) {
       throw new UnauthorizedException('Invalid or expired code');
     }
@@ -859,6 +917,7 @@ export class AuthService {
     if (!pending || !(await argon2.verify(pending.codeHash, code))) {
       throw new UnauthorizedException('Invalid or expired code');
     }
+    this.refuseIfPending(user);
 
     const wasVerified = user.emailVerified;
     const [updated] = await this.prisma.$transaction([
@@ -964,6 +1023,7 @@ export class AuthService {
           { phone: identifier.trim() },
         ],
       },
+      include: { phoneVerification: true },
     });
     // Same error whether the user or the code is wrong — never leak existence.
     if (!user) {
@@ -974,6 +1034,7 @@ export class AuthService {
     if (!ok) {
       throw new UnauthorizedException('Invalid or expired reset code');
     }
+    this.refuseIfPending(user);
 
     const updated = await this.prisma.wawuUser.update({
       where: { id: user.id },
@@ -1029,10 +1090,14 @@ export class AuthService {
     dto: ActivateDto,
   ): Promise<TokenPair & { user: UserResponse }> {
     const email = dto.email.toLowerCase().trim();
-    const user = await this.prisma.wawuUser.findUnique({ where: { email } });
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { email },
+      include: { phoneVerification: true },
+    });
     if (!user) {
       throw new UnauthorizedException('Invalid or expired activation token');
     }
+    this.refuseIfPending(user);
     if (user.passwordHash) {
       throw new BadRequestException('Account already activated');
     }

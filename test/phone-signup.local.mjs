@@ -123,18 +123,33 @@ const ipFor = (n) =>
 let ipCounter = 1000;
 const newIp = () => ipFor(ipCounter++);
 
+const attempts = new Map();
+const normPhone = (raw) => {
+  const d = String(raw).replace(/[^\d+]/g, '');
+  const m = d.match(/^(?:\+?234|0)?(\d{10})$/);
+  return m ? `+234${m[1]}` : d;
+};
+// The app keeps the secret sign-up returns and sends it back; so does this.
 const post = async (path, body, ip = newIp(), extra = {}) => {
+  const payload =
+    path.startsWith('/auth/phone/verify/') && body.attempt === undefined
+      ? { ...body, attempt: attempts.get(normPhone(body.phone)) ?? 'no-secret' }
+      : body;
   const started = performance.now();
   const res = await fetch(`${ID}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-real-ip': ip, ...extra },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
   const ms = performance.now() - started;
+  const json = await res.json();
+  if (path === '/auth/signup' && json.data?.attempt) {
+    attempts.set(json.data.phone, json.data.attempt);
+  }
   return {
     status: res.status,
     retryAfter: res.headers.get('retry-after'),
-    json: await res.json(),
+    json,
     ms,
   };
 };
@@ -677,115 +692,172 @@ try {
       `spread=${spread}ms`,
     );
   }
-  // the second start inside the gap, and a lock, look the same for a number nobody registered
-  const gapUnknown = await post('/auth/phone/verify/start', {
-    phone: classes.unknown[0].phone,
-  });
-  const gapPending = await post('/auth/phone/verify/start', {
-    phone: classes.pending[0].phone,
-  });
+  // a stranger (no secret) learns nothing from the gap, the lock or the budget
+  const strangerStart = [];
+  for (const ph of [classes.unknown[0].phone, classes.pending[0].phone]) {
+    strangerStart.push(
+      shapeOf(
+        await post('/auth/phone/verify/start', {
+          phone: ph,
+          attempt: 'a-stranger',
+        }),
+      ),
+    );
+    strangerStart.push(
+      shapeOf(
+        await post('/auth/phone/verify/start', {
+          phone: ph,
+          attempt: 'a-stranger',
+        }),
+      ),
+    );
+  }
   ok(
-    'F-3: the resend-gap answer is the same for a registered and an unregistered number',
-    shapeOf(gapUnknown) === shapeOf(gapPending) &&
-      gapUnknown.json.code === 'PHONE_CODE_RESEND_TOO_SOON',
-    `${shapeOf(gapUnknown)} / ${shapeOf(gapPending)}`,
+    'U-3: asked twice at once with a wrong secret, a registered and an unregistered number answer the same (no resend-gap tell)',
+    new Set(strangerStart).size === 1 && strangerStart[0].startsWith('200'),
+    strangerStart.join(' | '),
   );
-  const lockSeq = async (ph) => {
-    const out = [];
-    for (let i = 0; i < 6; i++)
-      out.push(
+  const strangerConfirm = [];
+  for (const ph of [classes.unknown[1].phone, classes.pending[1].phone]) {
+    for (let i = 0; i < 6; i++) {
+      strangerConfirm.push(
         shapeOf(
           await post('/auth/phone/verify/confirm', {
             phone: ph,
+            attempt: 'a-stranger',
             code: '654321',
           }),
         ),
       );
-    return out.join(' ; ');
-  };
-  const lockedUnknown = await lockSeq('+2348055500001');
-  await post('/auth/signup', {
-    email: `lk.${stamp}@example.test`,
-    phone: '+2348066600001',
-    password,
-  });
-  const lockedPending = await lockSeq('+2348066600001');
+    }
+  }
   ok(
-    'F-3: six wrong codes lock a number nobody registered exactly as they lock a pending one',
-    lockedUnknown === lockedPending,
-    `${lockedUnknown}  vs  ${lockedPending}`,
+    'F-3: six wrong codes with no secret never lock anything, and look the same for either number',
+    new Set(strangerConfirm).size === 1 && strangerConfirm[0].startsWith('400'),
+    [...new Set(strangerConfirm)].join(' | '),
   );
 
-  // ── 6. F-4: nobody can pre-claim someone else's email ──────────────────────
+  // ── 6. D-3 and F-4: an email held by a phone-proven account ────────────────
+  const mailCode = (address) =>
+    [
+      ...log
+        .join('')
+        .matchAll(
+          new RegExp(
+            `to=${address.replace(/[.+]/g, '\\$&')} [^\\n]*code=(\\d{6})`,
+            'g',
+          ),
+        ),
+    ].at(-1)?.[1];
   const victimEmail = `victim.${stamp}@example.test`;
-  r = await post('/auth/signup', {
-    email: victimEmail,
-    phone: '09011111111',
-    password: 'attackers-password',
-  });
-  await sleep(300);
-  r = await post('/auth/phone/verify/confirm', {
-    phone: '09011111111',
-    code: codeFor('+2349011111111'),
-  });
-  ok(
-    'F-4: the attacker proves their own phone against the victim email',
-    r.status === 200,
-  );
+  const victimPass = 'victims-own-password';
   r = await post('/auth/signup', {
     email: victimEmail,
     phone: '08022222222',
-    password: 'victims-password',
+    password: victimPass,
   });
-  ok(
-    'F-4: the victim then signs up with their own email and phone and succeeds',
-    r.status === 201,
-    JSON.stringify(r.json),
-  );
-  await sleep(300);
-  const owners = (
-    await sql(
-      `select phone, email, phone_verified_at from wawu_users where phone in ('+2349011111111','+2348022222222') order by phone`,
-    )
-  ).rows;
-  ok(
-    'F-4: the email now belongs to the victim and the attacker row holds none',
-    owners.find((o) => o.phone === '+2348022222222').email === victimEmail &&
-      owners.find((o) => o.phone === '+2349011111111').email === null &&
-      owners.find((o) => o.phone === '+2348022222222').phone_verified_at ===
-        null,
-    JSON.stringify(owners),
-  );
-  r = await post('/auth/login', {
-    identifier: victimEmail,
-    password: 'attackers-password',
-  });
-  ok(
-    'F-4: the attacker password gives no session on the victim email',
-    r.status !== 200,
-    JSON.stringify(r.json),
-  );
+  await sleep(250);
   r = await post('/auth/phone/verify/confirm', {
     phone: '08022222222',
     code: codeFor('+2348022222222'),
   });
   ok(
-    'F-4: the victim proves their phone and gets their own session',
-    r.status === 200 && r.json.data.user.email === victimEmail,
-    JSON.stringify(r.json).slice(0, 120),
+    'D-3: the victim signs up on mobile and proves their phone, never their email',
+    r.status === 200,
   );
-  await skipGap('+2348022222222');
+  const victimId = r.json.data.user.id;
+  // the attacker signs up with the victim's email and a phone of their own
   r = await post('/auth/signup', {
-    email: `other.${stamp}@example.test`,
-    phone: '08022222222',
-    password,
+    email: victimEmail,
+    phone: '09011111111',
+    password: 'attackers-password',
   });
   ok(
-    'F-4: a proven phone is never taken over (409)',
-    r.status === 409,
+    'D-3: the attacker signup is accepted but says an email code is needed',
+    r.status === 201 && r.json.data.emailCodeRequired === true,
     JSON.stringify(r.json),
   );
-  // an unproven sign-up is superseded
+  let holder = (
+    await sql(
+      `select email, phone, phone_verified_at from wawu_users where id = $1`,
+      [victimId],
+    )
+  ).rows[0];
+  ok(
+    'D-3(a): the phone-proven victim lost nothing (email, phone, proof intact)',
+    holder.email === victimEmail &&
+      holder.phone === '+2348022222222' &&
+      holder.phone_verified_at !== null,
+    JSON.stringify(holder),
+  );
+  r = await post('/auth/login', {
+    identifier: victimEmail,
+    password: victimPass,
+  });
+  ok(
+    'D-3(a): and still signs in by email with their own password',
+    r.status === 200 && r.json.data.user.id === victimId,
+    JSON.stringify(r.json).slice(0, 120),
+  );
+  await sleep(250);
+  const phoneCodeA = codeFor('+2349011111111');
+  r = await post('/auth/phone/verify/confirm', {
+    phone: '09011111111',
+    code: phoneCodeA,
+  });
+  ok(
+    'D-3(c): the attacker holds the phone code but not the mailbox: refused, no session',
+    r.status === 400 && !r.json.data,
+    JSON.stringify(r.json),
+  );
+  const attackerRow = (
+    await sql(
+      `select email, phone_verified_at from wawu_users where phone = '+2349011111111'`,
+    )
+  ).rows[0];
+  ok(
+    'D-3(c): the attacker account has no email and no proof, and the victim still has theirs',
+    attackerRow.email === null && attackerRow.phone_verified_at === null,
+  );
+  // an attacker who does get both codes is the owner of the mailbox: the email moves, the other account keeps its phone
+  await skipGap('+2349011111111');
+  await post('/auth/phone/verify/start', { phone: '09011111111' });
+  await sleep(300);
+  r = await post('/auth/phone/verify/confirm', {
+    phone: '09011111111',
+    code: codeFor('+2349011111111'),
+    emailCode: mailCode(victimEmail),
+  });
+  ok(
+    'D-3(b): whoever proves the mailbox gets the email and a session of their own account',
+    r.status === 200 &&
+      r.json.data.user.email === victimEmail &&
+      r.json.data.user.id !== victimId,
+    JSON.stringify(r.json).slice(0, 160),
+  );
+  holder = (
+    await sql(
+      `select email, phone, phone_verified_at, password_hash is not null as has_pw from wawu_users where id = $1`,
+      [victimId],
+    )
+  ).rows[0];
+  ok(
+    'D-3(b): the account that held the unproven email keeps its phone, proof and password',
+    holder.email === null &&
+      holder.phone === '+2348022222222' &&
+      holder.phone_verified_at !== null &&
+      holder.has_pw,
+    JSON.stringify(holder),
+  );
+  r = await post('/auth/login', {
+    identifier: '08022222222',
+    password: victimPass,
+  });
+  ok(
+    'D-3(b): and signs in by phone',
+    r.status === 200 && r.json.data.user.id === victimId,
+    JSON.stringify(r.json).slice(0, 120),
+  );
   await post('/auth/signup', {
     email: `squat.${stamp}@example.test`,
     phone: '07033333333',
@@ -798,15 +870,17 @@ try {
   });
   ok(
     'F-4: an unproven sign-up does not hold its email',
-    r.status === 201,
+    r.status === 201 && r.json.data.emailCodeRequired === false,
     JSON.stringify(r.json),
   );
-  const gone = (
-    await sql(
-      `select count(*)::int as n from wawu_users where phone = '+2347033333333'`,
-    )
-  ).rows[0].n;
-  ok('F-4: the superseded sign-up is gone', gone === 0);
+  ok(
+    'F-4: the superseded sign-up is gone',
+    (
+      await sql(
+        `select count(*)::int as n from wawu_users where phone = '+2347033333333'`,
+      )
+    ).rows[0].n === 0,
+  );
   await post('/auth/signup', {
     email: `ttl.${stamp}@example.test`,
     phone: '07055555555',
@@ -823,6 +897,279 @@ try {
     'F-4: an unfinished sign-up stops being confirmable once it expires',
     r.status === 400 && r.json.code === 'PHONE_CODE_INVALID',
     JSON.stringify(r.json),
+  );
+  r = await post('/auth/register', {
+    firstName: 'Web',
+    lastName: 'Person',
+    email: `ttl.${stamp}@example.test`,
+    phone: '07055555555',
+    country: 'Nigeria',
+    password,
+  });
+  ok(
+    'U-4: a web register is not refused by the expired, never-confirmed sign-up that held the same email and phone',
+    r.status === 201,
+    JSON.stringify(r.json).slice(0, 120),
+  );
+  await post('/auth/signup', {
+    email: `live.${stamp}@example.test`,
+    phone: '07066660000',
+    password,
+  });
+  r = await post('/auth/register', {
+    firstName: 'Web',
+    lastName: 'Person',
+    email: `live.${stamp}@example.test`,
+    phone: '07066660001',
+    country: 'Nigeria',
+    password,
+  });
+  ok(
+    'U-4: a pending sign-up that has NOT expired still answers 409 to a web register (unchanged)',
+    r.status === 409,
+    JSON.stringify(r.json),
+  );
+
+  // ── 6b. D-1: a later sign-up cannot capture the victim ─────────────────────
+  const vEmail = `d1v.${stamp}@example.test`;
+  const aEmail = `d1a.${stamp}@example.test`;
+  const victim = await post('/auth/signup', {
+    email: vEmail,
+    phone: '08044440001',
+    password: 'victims-pass-1',
+  });
+  const victimSecret = victim.json.data.attempt;
+  const victimCode = codeFor('+2348044440001');
+  await skipGap('+2348044440001');
+  const attacker = await post('/auth/signup', {
+    email: aEmail,
+    phone: '08044440001',
+    password: 'attackers-pass-1',
+  });
+  const attackerCode = codeFor('+2348044440001');
+  ok(
+    'D-1: the attacker signs up with the victim phone and gets their own secret',
+    attacker.status === 201 && attacker.json.data.attempt !== victimSecret,
+    JSON.stringify(attacker.json).slice(0, 100),
+  );
+  r = await post('/auth/phone/verify/confirm', {
+    phone: '08044440001',
+    attempt: victimSecret,
+    code: attackerCode,
+  });
+  ok(
+    'D-1: the victim types the newest text with the secret they hold: refused, no session in the attacker account',
+    r.status === 400 && !r.json.data,
+    JSON.stringify(r.json),
+  );
+  r = await post('/auth/phone/verify/confirm', {
+    phone: '08044440001',
+    attempt: victimSecret,
+    code: victimCode,
+  });
+  ok(
+    'D-1: and with their own first code too',
+    r.status === 400 && !r.json.data,
+    JSON.stringify(r.json),
+  );
+  r = await post('/auth/phone/verify/confirm', {
+    phone: '08044440001',
+    attempt: attacker.json.data.attempt,
+    code: victimCode,
+  });
+  ok(
+    'D-1: the attacker cannot redeem the code that was texted to the victim before their sign-up',
+    r.status === 400 && !r.json.data,
+    JSON.stringify(r.json),
+  );
+  const rowA = (
+    await sql(`select phone_verified_at from wawu_users where email = $1`, [
+      aEmail,
+    ])
+  ).rows[0];
+  ok(
+    'D-1: nothing was proven by any of those',
+    rowA.phone_verified_at === null,
+  );
+  r = await post('/auth/phone/verify/confirm', {
+    phone: '08044440001',
+    attempt: attacker.json.data.attempt,
+    code: attackerCode,
+  });
+  ok(
+    'D-1: the real holder of the current sign-up is not locked out by the failed attempts',
+    r.status === 200 && r.json.data.user.email === aEmail,
+    JSON.stringify(r.json).slice(0, 120),
+  );
+
+  // ── 6c. U-1: a stranger spends nothing of a number's ───────────────────────
+  const uPhone = '+2348044440002';
+  const u = await post('/auth/signup', {
+    email: `u1.${stamp}@example.test`,
+    phone: uPhone,
+    password,
+  });
+  for (let i = 0; i < 16; i++)
+    await post(
+      '/auth/phone/verify/confirm',
+      { phone: uPhone, attempt: 'guessing-the-secret', code: '000000' },
+      `203.0.113.${i + 20}`,
+    );
+  const textsBefore2 = texts.length;
+  for (let i = 0; i < 6; i++)
+    await post(
+      '/auth/phone/verify/start',
+      { phone: uPhone, attempt: 'guessing-the-secret' },
+      `203.0.113.${i + 60}`,
+    );
+  await sleep(250);
+  ok(
+    'U-1: strangers with no secret sent no text',
+    texts.length === textsBefore2,
+  );
+  await skipGap(uPhone);
+  r = await post('/auth/phone/verify/start', {
+    phone: uPhone,
+    attempt: u.json.data.attempt,
+  });
+  ok(
+    'U-1: and the holder can still resend at once (no gap or daily budget was spent)',
+    r.status === 200,
+    JSON.stringify(r.json),
+  );
+  await sleep(250);
+  r = await post('/auth/phone/verify/confirm', {
+    phone: uPhone,
+    attempt: u.json.data.attempt,
+    code: codeFor(uPhone),
+  });
+  ok(
+    'U-1: and confirm (no wrong-code budget was spent)',
+    r.status === 200,
+    JSON.stringify(r.json).slice(0, 80),
+  );
+
+  // ── 6d. D-2: no session by any route before the phone code ─────────────────
+  const dEmail = `d2.${stamp}@example.test`;
+  const dPhone = '+2348044440003';
+  const d = await post('/auth/signup', {
+    email: dEmail,
+    phone: dPhone,
+    password,
+  });
+  r = await post('/auth/email/verify/start', { email: dEmail });
+  await sleep(300);
+  r = await post('/auth/email/verify/confirm', {
+    email: dEmail,
+    code: mailCode(dEmail) ?? '000000',
+  });
+  ok(
+    'D-2: email verify confirm gives no token while the phone code is pending',
+    r.status === 403 && r.json.code === 'PHONE_NOT_CONFIRMED' && !r.json.data,
+    JSON.stringify(r.json),
+  );
+  r = await post('/auth/login', { identifier: dEmail, password });
+  ok(
+    'D-2: nor does login',
+    r.status === 403 && !r.json.data,
+    JSON.stringify(r.json),
+  );
+  ok(
+    'D-2: and the refused email confirmation changed nothing (email still unverified)',
+    (
+      await sql(`select email_verified from wawu_users where email = $1`, [
+        dEmail,
+      ])
+    ).rows[0].email_verified === false,
+  );
+  r = await post('/auth/otp/start', { phone: dPhone });
+  await sleep(300);
+  const otpCode = mailCode(dEmail);
+  r = await post('/auth/otp/verify', {
+    phone: dPhone,
+    code: otpCode ?? '000000',
+  });
+  ok(
+    'D-2: nor does the phone OTP route (its code is mailed to the account email while WhatsApp is unset)',
+    r.status === 403 && !r.json.data,
+    JSON.stringify(r.json),
+  );
+  r = await post('/auth/forgot-password', {
+    identifier: dEmail,
+    method: 'sms',
+  });
+  await sleep(300);
+  r = await post('/auth/reset-password', {
+    identifier: dEmail,
+    code: mailCode(dEmail) ?? '000000',
+    newPassword: 'attackers-new-password',
+  });
+  ok(
+    'D-2: nor does the SMS-code password reset',
+    r.status === 403 || r.status === 401,
+    JSON.stringify(r.json),
+  );
+  ok(
+    'D-2: no refresh token exists for the account',
+    (
+      await sql(
+        `select count(*)::int as n from refresh_tokens rt join wawu_users u on u.id = rt.user_id where u.email = $1`,
+        [dEmail],
+      )
+    ).rows[0].n === 0,
+  );
+  r = await post('/auth/phone/verify/confirm', {
+    phone: dPhone,
+    attempt: d.json.data.attempt,
+    code: codeFor(dPhone),
+  });
+  ok(
+    'D-2: after the phone code the account gets its session',
+    r.status === 200 && !!r.json.data.accessToken,
+    JSON.stringify(r.json).slice(0, 80),
+  );
+  r = await post('/auth/login', {
+    identifier: dEmail,
+    password: 'attackers-new-password',
+  });
+  ok('D-2: and the reset the stranger tried changed nothing', r.status !== 200);
+  r = await post('/auth/login', { identifier: dEmail, password });
+  ok(
+    'D-2: the owner password still signs in',
+    r.status === 200,
+    JSON.stringify(r.json).slice(0, 80),
+  );
+
+  // ── 6e. D-4: changing the phone number keeps the right to sign in ──────────
+  const internal = (path, body) =>
+    fetch(`${ID}${path}`, {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        'x-service-key': local.INTERNAL_SERVICE_KEY.replace(/"/g, ''),
+      },
+      body: JSON.stringify(body),
+    });
+  const changed = await internal(
+    `/internal/users/${r.json.data.user.id}/phone`,
+    { phone: '08088880001' },
+  );
+  ok(
+    'D-4: the internal phone change answers 200',
+    changed.status === 200,
+    String(changed.status),
+  );
+  r = await post('/auth/login', { identifier: dEmail, password });
+  ok(
+    'D-4: and the user still signs in afterwards (email never verified through sign-up)',
+    r.status === 200,
+    JSON.stringify(r.json).slice(0, 80),
+  );
+  r = await post('/auth/login', { identifier: '08088880001', password });
+  ok(
+    'D-4: by the new phone too',
+    r.status === 200,
+    JSON.stringify(r.json).slice(0, 80),
   );
 
   // ── 7. F-5: parallel requests ──────────────────────────────────────────────
@@ -981,39 +1328,59 @@ try {
   const unkPhone = '+2348031118888';
   const perUnknown = [];
   for (let i = 0; i < 6; i++) {
-    await skipGap(unkPhone);
     perUnknown.push(
       (await post('/auth/phone/verify/start', { phone: unkPhone })).status,
     );
   }
   ok(
-    'F-9: a number nobody registered is counted the same way (5 requests a day, the sign-up counts as one for a registered number)',
-    perUnknown.join() === '200,200,200,200,200,429',
+    'F-9: a number nobody registered, or with a wrong secret, spends nothing and always answers 200',
+    perUnknown.every((x) => x === 200),
     perUnknown.join(),
   );
   const dosPhone = '+2348031117777';
-  await post('/auth/signup', {
+  const dos = await post('/auth/signup', {
     email: `dos.${stamp}@example.test`,
     phone: dosPhone,
     password,
   });
   for (let round = 0; round < 4; round++) {
-    await endLock(dosPhone);
     for (let i = 0; i < 4; i++)
       await post(
         '/auth/phone/verify/confirm',
-        { phone: dosPhone, code: '000000' },
+        { phone: dosPhone, attempt: 'a-stranger', code: '000000' },
         '203.0.113.200',
       );
   }
   r = await post('/auth/phone/verify/confirm', {
     phone: dosPhone,
+    attempt: dos.json.data.attempt,
     code: codeFor(dosPhone),
   });
   ok(
-    "F-9: a stranger who burns a victim's guesses holds the sign-up back for at most a day",
-    r.status === 429 && r.json.retryAfterSeconds <= 86400,
-    JSON.stringify(r.json),
+    "F-9: a stranger cannot burn a victim's guesses: 16 wrong codes with no secret, and the real code works",
+    r.status === 200,
+    JSON.stringify(r.json).slice(0, 80),
+  );
+  const v6 = [];
+  for (let i = 0; i < 31; i++) {
+    v6.push(
+      (
+        await post(
+          '/auth/signup',
+          {
+            email: `v6.${i}.${stamp}@example.test`,
+            phone: `0809${String(5000000 + i)}`,
+            password,
+          },
+          `2001:db8:abcd:12:${i}:${i}:${i}:${i}`,
+        )
+      ).status,
+    );
+  }
+  ok(
+    'U-2: 31 sign-ups from 31 addresses in one IPv6 /64 count as one client: the 31st is a 429',
+    v6.slice(0, 30).every((x) => x === 201) && v6[30] === 429,
+    v6.join(),
   );
 
   // ── 10. The provider refuses the text ──────────────────────────────────────
@@ -1080,6 +1447,32 @@ try {
       g3.json.code === 'RATE_LIMITED' &&
       Number(g3.retryAfter) > 0,
     [g1, g2, g3, g4].map((x) => x.status).join(),
+  );
+
+  // ── 12. U-1: the daily budget is exact, even for a burst ───────────────────
+  await halt();
+  await clean();
+  await boot({
+    SMS_LIMIT_GLOBAL_PER_DAY: '5',
+    SMS_LIMIT_IP_PER_HOUR: '1000',
+    SMS_LIMIT_IP_PER_DAY: '1000',
+  });
+  const burstBefore = texts.length;
+  const burst = await Promise.all(
+    Array.from({ length: 24 }, (_, i) =>
+      post('/auth/signup', {
+        email: `burst${i}.${stamp}@example.test`,
+        phone: `0803200${String(1000 + i)}`,
+        password,
+      }),
+    ),
+  );
+  await sleep(300);
+  ok(
+    'U-1: 24 parallel sign-ups against a budget of 5 send exactly 5 texts (before: 22 too many)',
+    texts.length - burstBefore === 5 &&
+      burst.filter((x) => x.status === 201).length === 5,
+    `texts=${texts.length - burstBefore} created=${burst.filter((x) => x.status === 201).length}`,
   );
 } catch (err) {
   console.error(err);

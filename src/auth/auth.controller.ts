@@ -51,7 +51,11 @@ export class AuthController {
     @Req() req: Request,
   ) {
     return {
-      data: await this.phoneSignup.start(dto.phone, clientAddress(req)),
+      data: await this.phoneSignup.start(
+        dto.phone,
+        dto.attempt,
+        clientAddress(req),
+      ),
     };
   }
 
@@ -64,7 +68,9 @@ export class AuthController {
     return {
       data: await this.phoneSignup.confirm(
         dto.phone,
+        dto.attempt,
         dto.code,
+        dto.emailCode,
         clientAddress(req),
       ),
     };

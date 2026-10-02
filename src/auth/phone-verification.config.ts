@@ -54,7 +54,10 @@ export interface PhoneVerificationConfig {
   /** SMS_LIMIT_IP_PER_HOUR. Sign-up and resend requests from one client address. */
   // PROVISIONAL(AUTH03-LIMIT-IP, owner=owner, why=no document names a request limit per client address)
   ipPerHour: number;
-  /** SMS_LIMIT_PHONE_PER_DAY. Sign-up and resend requests naming one number. */
+  /** SMS_LIMIT_IP_PER_DAY. The same requests from one client address, per day: each address's share of the daily budget. */
+  // PROVISIONAL(AUTH03-LIMIT-IP-DAY, owner=owner, why=no document names a daily share of the text budget per client address)
+  ipPerDay: number;
+  /** SMS_LIMIT_PHONE_PER_DAY. Texts sent to one number. */
   // PROVISIONAL(AUTH03-LIMIT-PHONE, owner=owner, why=no document names a request limit per number)
   phonePerDay: number;
   /** SMS_LIMIT_GLOBAL_PER_DAY. Texts sent for sign-up in total, all callers. */
@@ -87,6 +90,7 @@ export function phoneVerificationConfig(
     ),
     allowedPhonePrefix: prefix?.startsWith('+') ? prefix : '+234',
     ipPerHour: whole(config, 'SMS_LIMIT_IP_PER_HOUR', 30),
+    ipPerDay: whole(config, 'SMS_LIMIT_IP_PER_DAY', 100),
     phonePerDay: whole(config, 'SMS_LIMIT_PHONE_PER_DAY', 5),
     globalPerDay: whole(config, 'SMS_LIMIT_GLOBAL_PER_DAY', 2000),
     confirmIpPerHour: whole(config, 'CONFIRM_LIMIT_IP_PER_HOUR', 120),

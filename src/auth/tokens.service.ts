@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { WawuUser } from '@prisma/client';
@@ -93,6 +97,25 @@ export class TokensService {
 
   /** Issue a fresh access+refresh pair and persist the refresh-token hash. */
   async issueTokens(user: WawuUser): Promise<TokenPair> {
+    // A mobile sign-up whose phone code was never entered holds no session,
+    // whichever route asks for one (sign-in, email confirmation, the phone
+    // OTP, a reset, a refresh). Every token this service mints comes through
+    // here, so this is the one place that has to know. Accounts without a
+    // pending sign-up (all web and legacy rows) are not touched.
+    if (!user.phoneVerifiedAt) {
+      const pending = await this.prisma.phoneVerification.findUnique({
+        where: { userId: user.id },
+        select: { id: true },
+      });
+      if (pending) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          code: 'PHONE_NOT_CONFIRMED',
+          message: 'Confirm your phone number to finish signing up.',
+        });
+      }
+    }
+
     // `issuer` lets every resource server confirm a token came from THIS
     // identity service rather than merely being signed by some key in the
     // JWKS. Emitted only when configured, and additive: verifiers that do not

@@ -131,6 +131,7 @@ describe('login: unverified email', () => {
       expect(findFirst).toHaveBeenCalledTimes(2);
       expect((findFirst.mock.calls as unknown[][])[1][0]).toEqual({
         where: { phone: '+2348031234412', phoneVerifiedAt: { not: null } },
+        include: { phoneVerification: true },
       });
     });
 
@@ -142,6 +143,7 @@ describe('login: unverified email', () => {
       expect(findFirst).toHaveBeenCalledTimes(1);
       expect((findFirst.mock.calls as unknown[][])[0][0]).toEqual({
         where: { OR: [{ email: '08031234412' }, { phone: '08031234412' }] },
+        include: { phoneVerification: true },
       });
     });
 

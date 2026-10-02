@@ -45,6 +45,9 @@ export abstract class RateLimiter {
     windowSeconds: number,
   ): Promise<Allowance>;
 
+  /** Give back one use (a text that was reserved and never went out). */
+  abstract release(scope: string, key: string): Promise<void>;
+
   /** Forget a counter (a text that was never delivered is not held against the person). */
   abstract forget(scope: string, key: string): Promise<void>;
 
@@ -114,6 +117,12 @@ export class DbRateLimiter extends RateLimiter {
       return { allowed: true, retryAfterSeconds: 0 };
     }
     return { allowed: false, retryAfterSeconds: Math.ceil(row.retry) };
+  }
+
+  async release(scope: string, key: string): Promise<void> {
+    await this.prisma.$executeRaw`
+      UPDATE rate_counters SET count = GREATEST(count - 1, 0)
+      WHERE scope = ${scope} AND key = ${key}`;
   }
 
   async forget(scope: string, key: string): Promise<void> {

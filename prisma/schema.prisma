@@ -98,8 +98,7 @@ model WawuUser {
   // sign-up, POST /auth/phone/verify/confirm). NULL for every row that existed
   // before this column, and for any account that has not proven its phone.
   // AuthService.login() lets a phone-verified account in without a verified
-  // email; an account with this NULL is judged exactly as before. Cleared
-  // whenever the phone number on the row changes.
+  // email; an account with this NULL is judged exactly as before.
   phoneVerifiedAt  DateTime?        @map("phone_verified_at")
   // What the person does for a living, free text, as typed in the app.
   occupation       String?
@@ -228,6 +227,15 @@ model PhoneVerification {
   codeHash        String   @map("code_hash")
   expiresAt       DateTime @map("expires_at")
   lastSentAt      DateTime @map("last_sent_at")
+  // sha256 of the secret POST /auth/signup handed back for this attempt. The
+  // phone routes need it with the phone, so a code only ever works in the
+  // sign-up that asked for it.
+  attemptHash     String   @unique @map("attempt_hash")
+  // Set when the email on this sign-up is held, unproven, by another mobile
+  // account: it is given to this account only if the person also enters the
+  // code mailed to it. Until then the account has no email.
+  claimEmail      String?  @map("claim_email")
+  emailCodeHash   String?  @map("email_code_hash")
   // A sign-up that has not proven its phone by this time can no longer be
   // confirmed, and any new sign-up may take its email and phone.
   signupExpiresAt DateTime @map("signup_expires_at")

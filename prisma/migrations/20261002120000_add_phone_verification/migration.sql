@@ -23,6 +23,9 @@ CREATE TABLE "phone_verifications" (
     "code_hash" TEXT NOT NULL,
     "expires_at" TIMESTAMP(3) NOT NULL,
     "last_sent_at" TIMESTAMP(3) NOT NULL,
+    "attempt_hash" TEXT NOT NULL,
+    "claim_email" TEXT,
+    "email_code_hash" TEXT,
     "signup_expires_at" TIMESTAMP(3) NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
@@ -51,6 +54,9 @@ CREATE TABLE "rate_counters" (
 
     CONSTRAINT "rate_counters_pkey" PRIMARY KEY ("scope","key")
 );
+
+-- CreateIndex
+CREATE UNIQUE INDEX "phone_verifications_attempt_hash_key" ON "phone_verifications"("attempt_hash");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "phone_verifications_user_id_key" ON "phone_verifications"("user_id");

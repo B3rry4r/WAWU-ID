@@ -62,6 +62,12 @@ export class MemoryRateLimiter extends RateLimiter {
     });
   }
 
+  release(scope: string, key: string): Promise<void> {
+    const c = this.counters.get(`${scope}|${key}`);
+    if (c) c.count = Math.max(0, c.count - 1);
+    return Promise.resolve();
+  }
+
   forget(scope: string, key: string): Promise<void> {
     this.counters.delete(`${scope}|${key}`);
     return Promise.resolve();

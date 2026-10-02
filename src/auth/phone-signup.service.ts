@@ -8,8 +8,9 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { PhoneVerification, WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { randomInt } from 'crypto';
+import { createHash, randomBytes, randomInt } from 'crypto';
 import { normalisePhone, phoneVariants } from '../common/phone.util';
+import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SMS_PROVIDER, SmsSendError } from '../sms/sms.provider';
 import type { SmsProvider } from '../sms/sms.provider';
@@ -30,6 +31,18 @@ export interface PhoneCodeSent {
   expiresIn: number;
   /** Seconds until another code can be requested. */
   resendIn: number;
+}
+
+/** What sign-up answers: the above, plus the secret that ties the next calls to this sign-up. */
+export interface SignupStarted extends PhoneCodeSent {
+  /**
+   * Unguessable, shown once. `phone/verify/start` and `phone/verify/confirm`
+   * need it together with the phone, so a code only works in the sign-up that
+   * asked for it. The app keeps it with the screen state and sends it back.
+   */
+  attempt: string;
+  /** True when the email is held by another account: the confirm call must also carry `emailCode`. */
+  emailCodeRequired: boolean;
 }
 
 function problem(
@@ -60,20 +73,24 @@ const decoyHash = () => (dummyHash ??= argon2.hash('no pending sign-up'));
 
 type Pending = PhoneVerification & { user: WawuUser };
 
+const sha256 = (value: string) =>
+  createHash('sha256').update(value).digest('hex');
+
 /**
  * Mobile sign-up with a phone code (AUTH-03).
  *
- * `signup` creates the account and texts a 6-digit code to the phone. It
- * issues NO session: the person gets one from `confirm`, once the code is
- * right. The routes here act ONLY on a pending sign-up: an account created by
- * `signup` that has a live `phone_verifications` row and has not proven its
- * phone. No other account, however old, can be texted or confirmed through
- * them, so a code never mints a session for an account that did not come from
- * sign-up.
+ * `signup` creates the account, texts a 6-digit code to the phone and returns
+ * an `attempt` secret. It issues NO session: the person gets one from
+ * `confirm`, once the code is right. The phone routes act ONLY on a pending
+ * sign-up and only for whoever holds that sign-up's `attempt`: with the
+ * secret missing or wrong they answer as they would for any number, touch no
+ * counter, and a code texted for one sign-up cannot be redeemed in another
+ * (a later sign-up for the same number replaces the pending one and the
+ * replaced one's secret stops working).
  *
  * `start` and `confirm` answer the same way for a number nobody registered, a
- * number that is registered but not pending, and one that is pending, and do
- * the same work (a hash, a counter) in each case.
+ * number that is registered but not pending, and a secret that is wrong, and
+ * do the same work (a hash) in each case.
  */
 @Injectable()
 export class PhoneSignupService {
@@ -86,26 +103,87 @@ export class PhoneSignupService {
     config: ConfigService,
     @Inject(SMS_PROVIDER) private readonly sms: SmsProvider,
     private readonly limits: RateLimiter,
+    private readonly mail: MailService,
   ) {
     this.settings = phoneVerificationConfig(config);
   }
 
   // ── sign up ────────────────────────────────────────────────────────────────
 
-  async signup(dto: SignupDto, address: string): Promise<PhoneCodeSent> {
+  async signup(dto: SignupDto, address: string): Promise<SignupStarted> {
     const phone = this.requirePhone(dto.phone);
     this.requireProvider();
-    await this.throttleSend(address, phone);
+    await this.gateAddress(address);
+
+    // A text is reserved before anything is written, and given back if the
+    // sign-up does not end in one.
+    const reserved: Array<[string, string]> = [];
+    const reserve = async (
+      scope: string,
+      key: string,
+      limit: number,
+      window: number,
+    ) => {
+      const out = await this.limits.hit(scope, key, limit, window);
+      reserved.push([scope, key]);
+      return out;
+    };
+    const giveBack = () =>
+      Promise.all(
+        reserved.map(([scope, key]) => this.limits.release(scope, key)),
+      );
+
+    const gap = await reserve(
+      'sms-phone-gap',
+      phone,
+      1,
+      this.settings.resendSeconds,
+    );
+    if (!gap.allowed) {
+      await giveBack();
+      throw problem(
+        429,
+        'PHONE_CODE_RESEND_TOO_SOON',
+        'Wait before asking for another code.',
+        gap.retryAfterSeconds,
+      );
+    }
+    const day = await reserve(
+      'sms-phone-day',
+      phone,
+      this.settings.phonePerDay,
+      86400,
+    );
+    const all = await reserve(
+      'sms-global',
+      'all',
+      this.settings.globalPerDay,
+      86400,
+    );
+    if (!day.allowed || !all.allowed) {
+      await giveBack();
+      throw this.busy(
+        Math.max(
+          day.retryAfterSeconds,
+          all.allowed ? 0 : all.retryAfterSeconds,
+        ),
+      );
+    }
 
     const email = dto.email.toLowerCase().trim();
     const code = this.newCode();
     const codeHash = await argon2.hash(code);
     const passwordHash = await argon2.hash(dto.password);
+    const attempt = randomBytes(32).toString('base64url');
+    const emailCode = this.newCode();
+    const emailCodeHash = await argon2.hash(emailCode);
     const now = new Date();
     const variants = phoneVariants(phone);
+    let claim = false;
 
     try {
       await this.prisma.$transaction(async (tx) => {
+        claim = false;
         const clashes = await tx.wawuUser.findMany({
           where: { OR: [{ email }, { phone: { in: variants } }] },
           include: { phoneVerification: true },
@@ -113,7 +191,7 @@ export class PhoneSignupService {
         for (const other of clashes) {
           if (other.phoneVerification && !other.phoneVerifiedAt) {
             // An unproven sign-up holds nothing: a newer sign-up takes its
-            // email and phone, and it is gone.
+            // email and phone, and it is gone, together with its secret.
             await tx.wawuUser.deleteMany({ where: { id: other.id } });
           } else if (
             other.email === email &&
@@ -121,14 +199,11 @@ export class PhoneSignupService {
             other.phoneVerifiedAt &&
             !other.emailVerified
           ) {
-            // A mobile account whose email nobody ever proved. The email is
-            // only a claim there, so the person who is signing up with it now
-            // takes it; the other account keeps its proven phone and signs
-            // in with that.
-            await tx.wawuUser.update({
-              where: { id: other.id },
-              data: { email: null },
-            });
+            // A mobile account holds this email without having proven it. It
+            // keeps the email: nothing is taken from it here. This sign-up
+            // gets the email only if its person also enters the code mailed
+            // to it (see confirm).
+            claim = true;
           } else {
             throw new ConflictException(SAME_ACCOUNT);
           }
@@ -136,7 +211,7 @@ export class PhoneSignupService {
 
         await tx.wawuUser.create({
           data: {
-            email,
+            email: claim ? null : email,
             phone,
             passwordHash,
             occupation: dto.occupation?.trim() || null,
@@ -148,6 +223,9 @@ export class PhoneSignupService {
               create: {
                 phone,
                 codeHash,
+                attemptHash: sha256(attempt),
+                claimEmail: claim ? email : null,
+                emailCodeHash: claim ? emailCodeHash : null,
                 expiresAt: this.codeExpiry(now),
                 lastSentAt: now,
                 signupExpiresAt: new Date(
@@ -159,6 +237,7 @@ export class PhoneSignupService {
         });
       });
     } catch (err) {
+      await giveBack();
       // Two sign-ups for the same email or phone at once: one wins, the other
       // is told the account exists.
       if ((err as { code?: string }).code === 'P2002') {
@@ -172,7 +251,8 @@ export class PhoneSignupService {
     } catch (err) {
       if (!(err instanceof SmsSendError)) throw err;
       this.logger.error(`Sign-up code was not sent: ${err.message}`);
-      // Nothing was delivered: the person may ask again at once.
+      // Nothing was delivered: the text is given back and the person may ask again at once.
+      await giveBack();
       await this.limits.forget('sms-phone-gap', phone);
       throw problem(
         503,
@@ -180,37 +260,87 @@ export class PhoneSignupService {
         'We could not send the code. Try again in a moment.',
       );
     }
-    return this.shape(phone);
+    if (claim) await this.mailEmailCode(email, emailCode);
+    return { ...this.shape(phone), attempt, emailCodeRequired: claim };
   }
 
   /**
-   * Send another code to a pending sign-up. Anything else (an unknown number,
-   * a registered one that is not pending, a proven one) gets the same answer
-   * and no text.
+   * Send another code to a pending sign-up, for whoever holds its `attempt`.
+   * Anything else (an unknown number, a registered one that is not pending, a
+   * proven one, a wrong or old secret) gets the same answer and no text, and
+   * spends nothing but the caller's own address allowance.
    */
-  async start(rawPhone: string, address: string): Promise<PhoneCodeSent> {
+  async start(
+    rawPhone: string,
+    attempt: string,
+    address: string,
+  ): Promise<PhoneCodeSent> {
     const phone = this.requirePhone(rawPhone);
     this.requireProvider();
-    await this.throttleSend(address, phone);
+    await this.gateAddress(address);
 
     const code = this.newCode();
     const codeHash = await argon2.hash(code);
-    const pending = await this.findPending(phone);
-    if (pending) {
-      const now = new Date();
-      await this.prisma.phoneVerification.update({
-        where: { id: pending.id },
-        data: {
-          codeHash,
-          expiresAt: this.codeExpiry(now),
-          lastSentAt: now,
-        },
-      });
-      // Not awaited: the answer must not take longer for a number that is
-      // pending than for one that is not.
-      void this.deliver(phone, code).catch((err: unknown) => {
-        this.logger.error(`Sign-up code was not sent: ${String(err)}`);
-      });
+    const pending = await this.findByAttempt(phone, attempt);
+    if (!pending) return this.shape(phone);
+
+    const gap = await this.limits.hit(
+      'sms-phone-gap',
+      phone,
+      1,
+      this.settings.resendSeconds,
+    );
+    if (!gap.allowed) {
+      throw problem(
+        429,
+        'PHONE_CODE_RESEND_TOO_SOON',
+        'Wait before asking for another code.',
+        gap.retryAfterSeconds,
+      );
+    }
+    const day = await this.limits.hit(
+      'sms-phone-day',
+      phone,
+      this.settings.phonePerDay,
+      86400,
+    );
+    if (!day.allowed) {
+      await this.limits.release('sms-phone-gap', phone);
+      throw this.busy(day.retryAfterSeconds);
+    }
+    const all = await this.limits.hit(
+      'sms-global',
+      'all',
+      this.settings.globalPerDay,
+      86400,
+    );
+    if (!all.allowed) {
+      await this.limits.release('sms-phone-gap', phone);
+      await this.limits.release('sms-phone-day', phone);
+      throw this.busy(all.retryAfterSeconds);
+    }
+
+    const now = new Date();
+    const emailCode = this.newCode();
+    await this.prisma.phoneVerification.update({
+      where: { id: pending.id },
+      data: {
+        codeHash,
+        expiresAt: this.codeExpiry(now),
+        lastSentAt: now,
+        ...(pending.claimEmail
+          ? { emailCodeHash: await argon2.hash(emailCode) }
+          : {}),
+      },
+    });
+    // Not awaited: the answer must not take longer for a real sign-up than for
+    // a made-up one.
+    void this.deliver(phone, code).catch(async (err: unknown) => {
+      this.logger.error(`Sign-up code was not sent: ${String(err)}`);
+      await this.limits.release('sms-global', 'all');
+    });
+    if (pending.claimEmail) {
+      void this.mailEmailCode(pending.claimEmail, emailCode);
     }
     return this.shape(phone);
   }
@@ -220,7 +350,9 @@ export class PhoneSignupService {
   /** Check the code. Right: the phone is proven and a session is issued. */
   async confirm(
     rawPhone: string,
+    attempt: string,
     code: string,
+    emailCode: string | undefined,
     address: string,
   ): Promise<TokenPair & { user: UserResponse }> {
     const phone = normalisePhone(rawPhone);
@@ -235,9 +367,16 @@ export class PhoneSignupService {
     );
     if (!gate.allowed) throw this.busy(gate.retryAfterSeconds);
 
-    // The guess is taken before the code is looked at, for every number alike,
-    // so parallel guesses share one budget and an unknown number runs out of
-    // guesses exactly as a pending one does.
+    const pending = await this.findByAttempt(phone, attempt);
+    if (!pending) {
+      // No such sign-up for this secret: the same work and the same answer as
+      // a wrong code, and nothing of the number's is spent.
+      await argon2.verify(await decoyHash(), code);
+      throw WRONG_CODE();
+    }
+
+    // The guess is taken before the code is looked at, so parallel guesses
+    // share one budget.
     const claim = await this.limits.claimGuess(phone, {
       maxRun: this.settings.maxWrongCodes,
       lockoutSeconds: this.settings.lockoutSeconds,
@@ -245,37 +384,67 @@ export class PhoneSignupService {
     });
     if (!claim.allowed) throw this.locked(claim.retryAfterSeconds);
 
-    const pending = await this.findPending(phone);
-    const live = !!pending && pending.expiresAt > new Date();
+    const live = pending.expiresAt > new Date();
     const right = await argon2.verify(
       live ? pending.codeHash : await decoyHash(),
       code,
     );
+    const emailRight = pending.claimEmail
+      ? !!emailCode &&
+        (await argon2.verify(
+          pending.emailCodeHash ?? (await decoyHash()),
+          emailCode,
+        ))
+      : true;
 
-    if (!live || !right) {
+    if (!live || !right || !emailRight) {
       throw claim.spent
         ? this.locked(this.settings.lockoutSeconds)
         : WRONG_CODE();
     }
 
-    const proven = await this.prisma.$transaction(async (tx) => {
-      // Whoever deletes the row first wins; a second request with the same
-      // code finds it gone and is told so, rather than failing.
-      const taken = await tx.phoneVerification.deleteMany({
-        where: { id: pending.id },
+    let proven: WawuUser;
+    try {
+      proven = await this.prisma.$transaction(async (tx) => {
+        // Whoever deletes the row first wins; a second request with the same
+        // code finds it gone and is told so, rather than failing.
+        const taken = await tx.phoneVerification.deleteMany({
+          where: { id: pending.id },
+        });
+        if (taken.count === 0) {
+          throw problem(
+            409,
+            'PHONE_ALREADY_CONFIRMED',
+            'That code has already been used',
+          );
+        }
+        if (pending.claimEmail) {
+          // The person proved the mailbox, so the email moves to them. Only an
+          // account that never proved it gives it up, and it keeps its phone.
+          await tx.wawuUser.updateMany({
+            where: {
+              email: pending.claimEmail,
+              emailVerified: false,
+              phoneVerifiedAt: { not: null },
+              id: { not: pending.userId },
+            },
+            data: { email: null },
+          });
+        }
+        return tx.wawuUser.update({
+          where: { id: pending.userId },
+          data: {
+            phoneVerifiedAt: new Date(),
+            ...(pending.claimEmail ? { email: pending.claimEmail } : {}),
+          },
+        });
       });
-      if (taken.count === 0) {
-        throw problem(
-          409,
-          'PHONE_ALREADY_CONFIRMED',
-          'That code has already been used',
-        );
+    } catch (err) {
+      if ((err as { code?: string }).code === 'P2002') {
+        throw new ConflictException(SAME_ACCOUNT);
       }
-      return tx.wawuUser.update({
-        where: { id: pending.userId },
-        data: { phoneVerifiedAt: new Date() },
-      });
-    });
+      throw err;
+    }
     await this.limits.clearGuesses(phone);
     return this.auth.sessionFor(proven);
   }
@@ -309,37 +478,16 @@ export class PhoneSignupService {
   }
 
   /**
-   * The limits on asking for a text. Every one of them counts the request
-   * whatever the number is, so none of them can tell a registered number from
-   * an unregistered one.
+   * The limits every caller meets whatever the number is: its address's share
+   * (an hour and a day) and a look at whether the day's budget for the whole
+   * service is already spent. Nothing here depends on whose number it is.
    */
-  private async throttleSend(address: string, phone: string): Promise<void> {
+  private async gateAddress(address: string): Promise<void> {
     const c = this.settings;
-    const ip = await this.limits.hit('sms-ip', address, c.ipPerHour, 3600);
-    if (!ip.allowed) throw this.busy(ip.retryAfterSeconds);
-
-    const gap = await this.limits.hit(
-      'sms-phone-gap',
-      phone,
-      1,
-      c.resendSeconds,
-    );
-    if (!gap.allowed) {
-      throw problem(
-        429,
-        'PHONE_CODE_RESEND_TOO_SOON',
-        'Wait before asking for another code.',
-        gap.retryAfterSeconds,
-      );
-    }
-    const day = await this.limits.hit(
-      'sms-phone-day',
-      phone,
-      c.phonePerDay,
-      86400,
-    );
+    const hour = await this.limits.hit('sms-ip', address, c.ipPerHour, 3600);
+    if (!hour.allowed) throw this.busy(hour.retryAfterSeconds);
+    const day = await this.limits.hit('sms-ip-day', address, c.ipPerDay, 86400);
     if (!day.allowed) throw this.busy(day.retryAfterSeconds);
-
     const all = await this.limits.isFull(
       'sms-global',
       'all',
@@ -354,7 +502,7 @@ export class PhoneSignupService {
       429,
       'RATE_LIMITED',
       'Too many requests. Try again later.',
-      retryAfterSeconds,
+      Math.max(1, retryAfterSeconds),
     );
   }
 
@@ -383,33 +531,39 @@ export class PhoneSignupService {
     };
   }
 
-  /** The pending sign-up for this number: a live row, the phone not proven, not expired. */
-  private async findPending(phone: string): Promise<Pending | null> {
-    const users = await this.prisma.wawuUser.findMany({
-      where: { phone: { in: phoneVariants(phone) } },
-      include: { phoneVerification: true },
+  /** The pending sign-up this secret belongs to, if it is for this number, not proven and not expired. */
+  private async findByAttempt(
+    phone: string,
+    attempt: string,
+  ): Promise<Pending | null> {
+    const row = await this.prisma.phoneVerification.findUnique({
+      where: { attemptHash: sha256(attempt) },
+      include: { user: true },
     });
-    const now = new Date();
-    for (const user of users) {
-      const row = user.phoneVerification;
-      if (
-        row &&
-        !user.phoneVerifiedAt &&
-        row.phone === phone &&
-        row.signupExpiresAt > now
-      ) {
-        return { ...row, user };
-      }
+    if (
+      !row ||
+      row.user.phoneVerifiedAt ||
+      row.phone !== phone ||
+      row.signupExpiresAt <= new Date()
+    ) {
+      return null;
     }
-    return null;
+    return row;
   }
 
   private async deliver(phone: string, code: string): Promise<void> {
-    await this.limits.hit('sms-global', 'all', Number.MAX_SAFE_INTEGER, 86400);
     const minutes = Math.max(1, Math.round(this.settings.codeTtlSeconds / 60));
     await this.sms.send(
       phone,
       `Your WAWU code is ${code}. It expires in ${minutes} minutes. Do not share it with anyone.`,
     );
+  }
+
+  private async mailEmailCode(email: string, code: string): Promise<void> {
+    try {
+      await this.mail.sendOtpCode(email, code, 'verify your email address');
+    } catch (err) {
+      this.logger.error(`Email code was not sent: ${String(err)}`);
+    }
   }
 }
