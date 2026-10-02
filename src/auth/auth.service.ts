@@ -10,6 +10,7 @@ import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomBytes, randomInt } from 'crypto';
 import { normalizeGender } from '../common/gender.util';
+import { normalisePhone } from '../common/phone.util';
 import {
   deriveVerification,
   TICK_COLUMNS,
@@ -22,6 +23,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ActivateDto } from './dto/activate.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { TokenPair, TokensService } from './tokens.service';
 
@@ -34,6 +36,12 @@ export interface UserResponse {
   state: string | null;
   gender: string | null;
   occupation: string | null;
+  /**
+   * 'user' or 'creator', as chosen at mobile sign-up. Present only when the
+   * account has one: every account that never said (all rows from before
+   * the column) is answered exactly as it always was, with no such key.
+   */
+  accountType?: string;
   /**
    * LEGACY, kept on the wire unchanged so an older Hub build keeps parsing
    * this response while both are deploying. Read `verification`.
@@ -91,6 +99,20 @@ export class AuthService {
     return { firstName, middleName: null, lastName: parts.join(' ') };
   }
 
+  /**
+   * The address mail may go to. A mobile sign-up never proves its email, so
+   * mail is held back from it until it is proven; every other account (web,
+   * legacy, phone-only) is exactly as before.
+   */
+  private provenEmail(user: {
+    email: string | null;
+    emailVerified: boolean;
+    phoneVerifiedAt: Date | null;
+  }): string | null {
+    if (!user.email) return null;
+    return user.emailVerified || !user.phoneVerifiedAt ? user.email : null;
+  }
+
   private toUserResponse(
     user: WawuUser,
     occupation: string | null = null,
@@ -105,7 +127,8 @@ export class AuthService {
       country: user.country,
       state: user.state ?? null,
       gender: user.gender ?? null,
-      occupation,
+      occupation: occupation ?? user.occupation ?? null,
+      ...(user.accountType ? { accountType: user.accountType } : {}),
       verificationTier: user.verificationTier,
       trustScore: user.trustScore,
       verification: deriveVerification(user),
@@ -140,6 +163,10 @@ export class AuthService {
         country: dto.country,
         state: dto.state ?? null,
         gender: normalizeGender(dto.gender),
+        occupation: dto.occupation?.trim() || null,
+        accountType: ACCOUNT_TYPES.includes(dto.accountType as AccountType)
+          ? dto.accountType
+          : null,
         passwordHash: await argon2.hash(dto.password),
         verificationTier: 'basic',
         trustScore: 0,
@@ -163,7 +190,7 @@ export class AuthService {
   }
 
   async login(dto: LoginDto): Promise<TokenPair & { user: UserResponse }> {
-    const user = await this.prisma.wawuUser.findFirst({
+    let user = await this.prisma.wawuUser.findFirst({
       where: {
         OR: [
           { email: dto.identifier.toLowerCase().trim() },
@@ -171,6 +198,18 @@ export class AuthService {
         ],
       },
     });
+
+    if (!user) {
+      // A number typed the local way (0803...) for an account that mobile
+      // sign-up stored as +234.... Only phone-verified accounts are looked up
+      // this way, so nothing that answered 404 for a legacy row changes.
+      const normalised = normalisePhone(dto.identifier);
+      if (normalised) {
+        user = await this.prisma.wawuUser.findFirst({
+          where: { phone: normalised, phoneVerifiedAt: { not: null } },
+        });
+      }
+    }
 
     if (!user) {
       // Intentional, by-design identifier-existence signal (404 +
@@ -204,7 +243,13 @@ export class AuthService {
     // this gate went live was backfilled to emailVerified = true by migration
     // 20260816020000_backfill_email_verified_for_existing_users, so this only
     // ever blocks genuinely new, never-verified signups.
-    if (user.email && !user.emailVerified) {
+    //
+    // The one other way in is a proven phone (phoneVerifiedAt, set when the
+    // owner of the number entered the code we texted them at mobile sign-up,
+    // see PhoneSignupService). That column is NULL for every row that existed
+    // before it was added and for every web sign-up, so for them this
+    // condition is exactly the one above and nothing changes.
+    if (user.email && !user.emailVerified && !user.phoneVerifiedAt) {
       throw new UnauthorizedException({
         statusCode: 403,
         code: 'EMAIL_NOT_VERIFIED',
@@ -214,7 +259,8 @@ export class AuthService {
 
     // Fire-and-forget login-alert email. CTA points at the account-security
     // page (env-overridable, defaults to the reset-password route on APP_URL).
-    if (user.email) {
+    const alertTo = this.provenEmail(user);
+    if (alertTo) {
       const appUrl = (
         this.config.get<string>('FRONTEND_URL') ??
         this.config.get<string>('APP_URL') ??
@@ -224,9 +270,17 @@ export class AuthService {
       // URL, so the live route is /forgot-password (not /auth/forgot-password).
       const secureUrl =
         this.config.get<string>('SECURITY_URL') ?? `${appUrl}/forgot-password`;
-      void this.mail.sendLoginAlert(user.email, secureUrl, user.firstName);
+      void this.mail.sendLoginAlert(alertTo, secureUrl, user.firstName);
     }
 
+    const pair = await this.tokens.issueTokens(user);
+    return { ...pair, user: this.toUserResponse(user) };
+  }
+
+  /** A session for a user whose identity a route has just proven. */
+  async sessionFor(
+    user: WawuUser,
+  ): Promise<TokenPair & { user: UserResponse }> {
     const pair = await this.tokens.issueTokens(user);
     return { ...pair, user: this.toUserResponse(user) };
   }
@@ -294,8 +348,9 @@ export class AuthService {
 
     // A granted tick is an approved account. Same fire-and-forget as the
     // legacy tier path: mail never blocks the write.
-    if (granted && updated.email) {
-      void this.mail.sendAccountApproved(updated.email, updated.firstName);
+    const approvedTo = this.provenEmail(updated);
+    if (granted && approvedTo) {
+      void this.mail.sendAccountApproved(approvedTo, updated.firstName);
     }
 
     return this.toUserResponse(updated);
@@ -400,8 +455,9 @@ export class AuthService {
 
     // Elevation to a trusted tier = account approved. Fire-and-forget the
     // branded "Account Approved" email (never block the tier update on mail).
-    if (updated.email) {
-      void this.mail.sendAccountApproved(updated.email, updated.firstName);
+    const approvedTo = this.provenEmail(updated);
+    if (approvedTo) {
+      void this.mail.sendAccountApproved(approvedTo, updated.firstName);
     }
 
     return this.toUserResponse(updated);
@@ -471,7 +527,9 @@ export class AuthService {
 
     const updated = await this.prisma.wawuUser.update({
       where: { id: userId },
-      data: { phone: trimmed },
+      // A different number has not been proven by anyone, so the proof for the
+      // old one goes with it.
+      data: { phone: trimmed, phoneVerifiedAt: null },
     });
 
     return this.toUserResponse(updated);
@@ -604,7 +662,7 @@ export class AuthService {
     const [updated] = await this.prisma.$transaction([
       this.prisma.wawuUser.update({
         where: { id: userId },
-        data: { phone: request.newPhone },
+        data: { phone: request.newPhone, phoneVerifiedAt: null },
       }),
       this.prisma.phoneChangeRequest.deleteMany({ where: { userId } }),
     ]);
@@ -840,6 +898,12 @@ export class AuthService {
 
     if (user) {
       if (method === 'email' && user.email) {
+        // A mobile sign-up's email was never proven: no mail goes to it.
+        if (!this.provenEmail(user)) {
+          return {
+            message: 'If an account exists, a reset code has been sent.',
+          };
+        }
         // Web hub: email a one-time reset link via Resend.
         const rawToken = randomBytes(32).toString('hex');
         await this.prisma.passwordResetToken.create({
@@ -1016,11 +1080,17 @@ export class AuthService {
   ): Promise<{ emailed: boolean }> {
     const user = await this.prisma.wawuUser.findUnique({
       where: { id: userId },
-      select: { email: true, firstName: true },
+      select: {
+        email: true,
+        firstName: true,
+        emailVerified: true,
+        phoneVerifiedAt: true,
+      },
     });
-    if (!user?.email) return { emailed: false };
+    const warnTo = user ? this.provenEmail(user) : null;
+    if (!user || !warnTo) return { emailed: false };
     await this.mail.sendUnpaidDeletionWarning(
-      user.email,
+      warnTo,
       user.firstName,
       hoursLeft,
       planUrl,
@@ -1035,11 +1105,17 @@ export class AuthService {
   ): Promise<{ emailed: boolean }> {
     const user = await this.prisma.wawuUser.findUnique({
       where: { id: userId },
-      select: { email: true, firstName: true },
+      select: {
+        email: true,
+        firstName: true,
+        emailVerified: true,
+        phoneVerifiedAt: true,
+      },
     });
-    if (!user?.email) return { emailed: false };
+    const inviteTo = user ? this.provenEmail(user) : null;
+    if (!user || !inviteTo) return { emailed: false };
     await this.mail.sendDittoDistributionInvite(
-      user.email,
+      inviteTo,
       user.firstName,
       signupUrl,
       discountPercent,
@@ -1063,7 +1139,9 @@ export class AuthService {
     userId: string,
     parts: { firstName: string; middleName?: string; lastName: string },
   ): Promise<UserResponse> {
-    const user = await this.prisma.wawuUser.findUnique({ where: { id: userId } });
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+    });
     if (!user) throw new NotFoundException('User not found');
 
     const updated = await this.prisma.wawuUser.update({
@@ -1073,7 +1151,9 @@ export class AuthService {
         // An empty string CLEARS it. Omitting the field leaves it alone,
         // which is a different intent and has to stay distinguishable.
         middleName:
-          parts.middleName === undefined ? undefined : parts.middleName.trim() || null,
+          parts.middleName === undefined
+            ? undefined
+            : parts.middleName.trim() || null,
         lastName: parts.lastName.trim(),
       },
     });
