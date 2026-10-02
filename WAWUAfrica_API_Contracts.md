@@ -69,6 +69,136 @@ Response 201:
 }
 ```
 
+### POST /auth/signup (mobile sign-up, phone code)
+Creates the account and texts a 6-digit code to the phone. **Issues no session**:
+the session comes from `/auth/phone/verify/confirm`. The phone may be written
+`0803...`, `+234 803...` or `2348031234412`; it is stored as `+2348031234412`.
+Only Nigerian numbers (`+234`, config `SIGNUP_ALLOWED_PHONE_PREFIX`) are texted.
+The answer carries an `attempt` secret, shown once: the next two calls need it
+with the phone, so a code only works in the sign-up that asked for it.
+```json
+Request:
+{
+  "email": "ada@email.com",
+  "phone": "08031234412",
+  "password": "min8chars",
+  "occupation": "Photographer",   // optional
+  "accountType": "creator"        // optional, "user" | "creator"
+}
+
+Response 201:
+{ "data": { "phone": "+2348031234412", "expiresIn": 300, "resendIn": 60,
+            "attempt": "Xk3...43 chars, unguessable, keep it",
+            "emailCodeRequired": false } }
+
+Error 400 PHONE_INVALID        not a usable phone number
+Error 400 PHONE_NOT_SUPPORTED  a valid number that is not Nigerian; nothing is sent
+Error 409                      the email or phone belongs to an account that is not an unconfirmed
+                               mobile sign-up: a phone-proven mobile account (phone), or a web, legacy
+                               or email-verified account (email or phone)
+Error 429 RATE_LIMITED / PHONE_CODE_RESEND_TOO_SOON   with retryAfterSeconds and a Retry-After header
+Error 503 SMS_NOT_CONFIGURED / SMS_SEND_FAILED        no account is created for the first
+```
+- A later sign-up for a phone (or email) held by an **unconfirmed** sign-up replaces
+  it, and the replaced sign-up's `attempt` stops working (a code texted for one
+  sign-up cannot be redeemed in another). An unconfirmed sign-up can no longer be
+  confirmed 24 hours after it was made (`PENDING_SIGNUP_TTL_SECONDS`) and then holds
+  neither its email nor its phone, even against `POST /auth/register`.
+- An email held by a **phone-proven** mobile account (one that never proved its
+  email) is never taken from it. The new sign-up is created without an email and the
+  answer says `emailCodeRequired: true`; a code is mailed to that address, and the
+  email is given to the new account only when `confirm` also carries that code
+  (`emailCode`). The other account keeps its phone, proof and password and signs in by
+  phone. Web, legacy and email-verified accounts are never touched (409).
+
+### POST /auth/phone/verify/start (send another code)
+For the holder of a sign-up's `attempt`. Any other call (an unregistered number, a web
+or legacy account, an account whose phone is proven, a wrong or replaced `attempt`)
+gets the same answer, sends nothing and spends nothing but the caller's own address
+allowance.
+```json
+Request:  { "phone": "+2348031234412", "attempt": "Xk3..." }
+Response 200: { "data": { "phone": "+2348031234412", "expiresIn": 300, "resendIn": 60 } }
+Error 429 PHONE_CODE_RESEND_TOO_SOON / RATE_LIMITED   { "statusCode", "code", "message", "retryAfterSeconds" }
+```
+
+### POST /auth/phone/verify/confirm
+Gives a session only to the account that sign-up created, never to an existing account.
+```json
+Request:  { "phone": "08031234412", "attempt": "Xk3...", "code": "481902", "emailCode": "123456" }
+          // emailCode only when sign-up said emailCodeRequired
+Response 200: { "data": { "accessToken": "eyJ...", "refreshToken": "eyJ...", "user": {...} } }
+
+Error 400 { "statusCode": 400, "code": "PHONE_CODE_INVALID", "message": "That code isn't right" }
+          (wrong code, expired, a wrong or replaced attempt, nothing pending for that number:
+          the same answer for all of them)
+Error 409 PHONE_ALREADY_CONFIRMED   a second request with the same code, at the same moment
+Error 429 { "statusCode": 429, "code": "PHONE_CODE_LOCKED", "message": "...", "retryAfterSeconds": 900 }
+          (the fourth wrong code in a row, and every call until the wait is over, even with the
+          right code; also once a number has taken its daily cap of wrong codes)
+Error 429 RATE_LIMITED              too many checks from one address
+```
+Wrong codes are counted per phone number, so asking for a fresh code or signing up again
+never gives guesses back. Only a call that carries a live `attempt` for that number is
+counted, so a stranger cannot lock a number or use up its budget.
+
+### Who gets a session before the phone code (D-2)
+An account created by `POST /auth/signup` whose phone code is still pending holds **no
+session from any route**. Every route in this service that hands out tokens goes through
+`TokensService.issueTokens`, which refuses (403 `PHONE_NOT_CONFIRMED`), and the routes
+that change state first refuse before they write anything:
+`POST /auth/login`, `/auth/refresh`, `/auth/otp/verify`, `/auth/email/verify/confirm`,
+`/auth/reset-password` (code by SMS), `/auth/activate`, `/auth/register` (cannot reach
+such an account: it answers 409 for a live one), and `/auth/phone/verify/confirm` (which
+deletes the pending state first). Web and legacy accounts have no pending state and are
+answered exactly as before. `POST /auth/register` is unchanged: it still issues tokens
+before any confirmation (BACKEND_GAPS G-2 in the mobile repo).
+
+### Limits on the sign-up phone routes
+All in `src/auth/phone-verification.config.ts`, each overridable in the environment,
+each PROVISIONAL until the owner confirms it. Counters live in the database, so they
+hold across instances; the daily text budget is reserved atomically before a text is
+sent (a burst never sends more than the budget) and given back if the text is not sent.
+
+| Limit | Default | Worst case at 7 naira a text |
+|---|---|---|
+| requests from one address (signup and start) | 30 an hour, 100 a day | 100 texts, 700 naira a day |
+| texts sent to one number | 5 a day, 1 a minute | 5 texts, 35 naira |
+| texts sent in all, per day | 2,000 | 14,000 naira: it takes about 20 addresses |
+| code checks from one address | 120 an hour | no text |
+| wrong codes in a row, then wait | 4, then 900 s | no text |
+| wrong codes per number per day | 12 | no text; chance of guessing a code at most 12 in 1,000,000 a day |
+| life of a code / of an unconfirmed sign-up | 300 s / 24 h | |
+
+A stranger who signs up with someone else's phone gets texts sent to that number and
+uses up its 5 a day; the real owner is then told to wait until the window ends. That is
+the cost of letting anyone start a sign-up without proving the phone first, and is
+bounded by the per-address limits.
+
+### Client address
+The per-address limits count the address in `X-Real-IP`, which nginx sets from the
+connection (`proxy_set_header X-Real-IP $remote_addr`, wawu-backend
+`deploy/install-services.sh`) so a client cannot choose it; without it, the LAST
+`X-Forwarded-For` entry; never the first (client-written). An IPv6 address counts as its
+/64 prefix. This holds only while nginx is the first hop and the service is not reachable
+except through it. Behind a CDN or load balancer every caller would share one address
+(the proxy's) and 30 sign-ups an hour would be all there is; the proxy's own header would
+have to be trusted instead. Reached directly, without nginx, a client can write its own
+`X-Real-IP`.
+
+### Login rule (POST /auth/login)
+An account with an email must have confirmed it, **or** have proven its phone
+(`phone_verified_at` set by `/auth/phone/verify/confirm`). Every account that has
+not proven its phone is judged exactly as before (403 `EMAIL_NOT_VERIFIED`).
+A phone typed the local way (`0803...`) finds a phone-verified account stored as
+`+234...` when the exact lookup finds nothing. The user in the answer carries
+`occupation` (as always, null when none) and, only when the account has one,
+`accountType`; accounts without one are answered with no such key. Mail (the
+sign-in alert and the others sent from this service) goes only to an email that
+was proven, or to accounts that never went through mobile sign-up. Changing a
+phone number through the internal routes writes the phone and nothing else, so a
+mobile account keeps its right to sign in.
+
 ### POST /auth/login
 ```json
 Request:

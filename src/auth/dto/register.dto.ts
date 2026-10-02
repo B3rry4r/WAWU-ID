@@ -68,10 +68,18 @@ export class RegisterDto {
   @IsString()
   gender?: string;
 
-  // Captured by the onboarding form but stored on the hub profile, not WAWU ID.
+  // Captured by the onboarding form. Stored here too (nullable column) so the
+  // sign-up answers survive; the hub profile still keeps its own copy.
   @IsOptional()
   @IsString()
   occupation?: string;
+
+  // 'user' or 'creator'. Optional: the web sign-up does not send it. Any other
+  // value is ignored rather than refused, so no request that worked before
+  // starts failing.
+  @IsOptional()
+  @IsString()
+  accountType?: string;
 
   @IsString()
   @MinLength(8)

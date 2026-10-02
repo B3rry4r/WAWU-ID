@@ -5,9 +5,12 @@ import { normalizePem } from '../common/pem.util';
 import { JwksModule } from '../jwks/jwks.module';
 import { MailModule } from '../mail/mail.module';
 import { OtpModule } from '../otp/otp.module';
+import { SmsModule } from '../sms/sms.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { InternalController } from './internal.controller';
+import { PhoneSignupService } from './phone-signup.service';
+import { DbRateLimiter, RateLimiter } from './rate-limiter.service';
 import { TokensService } from './tokens.service';
 
 @Module({
@@ -15,6 +18,7 @@ import { TokensService } from './tokens.service';
     JwksModule,
     OtpModule,
     MailModule,
+    SmsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -27,7 +31,12 @@ import { TokensService } from './tokens.service';
     }),
   ],
   controllers: [AuthController, InternalController],
-  providers: [AuthService, TokensService],
+  providers: [
+    AuthService,
+    TokensService,
+    PhoneSignupService,
+    { provide: RateLimiter, useClass: DbRateLimiter },
+  ],
   exports: [TokensService],
 })
 export class AuthModule {}

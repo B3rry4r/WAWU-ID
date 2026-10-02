@@ -94,6 +94,18 @@ model WawuUser {
   // blocks genuinely new, never-verified signups. See EmailVerificationCode.
   emailVerified    Boolean          @default(false) @map("email_verified")
 
+  // Set when the owner of `phone` entered the code we sent to it (mobile
+  // sign-up, POST /auth/phone/verify/confirm). NULL for every row that existed
+  // before this column, and for any account that has not proven its phone.
+  // AuthService.login() lets a phone-verified account in without a verified
+  // email; an account with this NULL is judged exactly as before.
+  phoneVerifiedAt  DateTime?        @map("phone_verified_at")
+  // What the person does for a living, free text, as typed in the app.
+  occupation       String?
+  // 'user' | 'creator' (the Hub's AccountType), enforced in the application
+  // layer like gender. NULL for rows that never said.
+  accountType      String?          @map("account_type")
+
   // Cross-platform reference links (see Brief Section 2)
   onboardingRef       String? @map("onboarding_ref") @db.Uuid // -> onboarding_submissions.uuid
   wawuafricaAppUserId Int?    @map("wawuafrica_app_user_id") // -> WAWUAfrica users.id
@@ -112,6 +124,7 @@ model WawuUser {
   phoneChangeRequests PhoneChangeRequest[]
   emailVerificationCodes EmailVerificationCode[]
   consents         Consent[]
+  phoneVerification PhoneVerification?
 
   @@map("wawu_users")
 }
@@ -200,6 +213,66 @@ model EmailVerificationCode {
 
   @@index([userId])
   @@map("email_verification_codes")
+}
+
+// The pending sign-up phone code for one account: at most one row per user,
+// and only POST /auth/signup creates it. The row is what makes an account a
+// pending mobile sign-up: the phone routes act on no account without one.
+// The code is stored hashed (argon2). Limits and durations live in
+// src/auth/phone-verification.config.ts.
+model PhoneVerification {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @unique @map("user_id") @db.Uuid
+  phone           String
+  codeHash        String   @map("code_hash")
+  expiresAt       DateTime @map("expires_at")
+  lastSentAt      DateTime @map("last_sent_at")
+  // sha256 of the secret POST /auth/signup handed back for this attempt. The
+  // phone routes need it with the phone, so a code only ever works in the
+  // sign-up that asked for it.
+  attemptHash     String   @unique @map("attempt_hash")
+  // Set when the email on this sign-up is held, unproven, by another mobile
+  // account: it is given to this account only if the person also enters the
+  // code mailed to it. Until then the account has no email.
+  claimEmail      String?  @map("claim_email")
+  emailCodeHash   String?  @map("email_code_hash")
+  // A sign-up that has not proven its phone by this time can no longer be
+  // confirmed, and any new sign-up may take its email and phone.
+  signupExpiresAt DateTime @map("signup_expires_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("phone_verifications")
+}
+
+// Wrong-code budget per PHONE NUMBER, not per code or per account row, so
+// asking for a fresh code (or signing up again) never hands guesses back. A
+// number nobody registered has a row too, which is what keeps the answer to
+// "is this number registered" the same. `runCount` wrong codes in a row start
+// a wait (`lockedUntil`); `dayCount` is the hard cap for the day.
+model PhoneGuessBudget {
+  phone       String    @id
+  runCount    Int       @default(0) @map("run_count")
+  lockedUntil DateTime? @map("locked_until")
+  dayStart    DateTime  @map("day_start")
+  dayCount    Int       @default(0) @map("day_count")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("phone_guess_budgets")
+}
+
+// Fixed-window counters shared by every instance: texts per client address,
+// per phone, and per day overall (src/auth/rate-limiter.service.ts).
+model RateCounter {
+  scope       String
+  key         String
+  windowStart DateTime @map("window_start")
+  count       Int      @default(0)
+
+  @@id([scope, key])
+  @@map("rate_counters")
 }
 
 // A published version of a legal document (privacy, terms, …). The actual text
