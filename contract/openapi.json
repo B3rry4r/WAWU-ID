@@ -326,6 +326,137 @@
         ]
       }
     },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogoutDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedOutAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation: a field missing or of the wrong type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Z2: sign out. The refresh token sent stops working. The same answer for a live, a dead or an unknown token.",
+        "tags": [
+          "Auth",
+          "app"
+        ]
+      }
+    },
+    "/auth/change-password": {
+      "post": {
+        "operationId": "changePassword",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPairAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation (new password under 8 or over 128 characters), CURRENT_PASSWORD_WRONG, PASSWORD_UNCHANGED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_INVALID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "PASSWORD_NOT_SET (an account that never had a password).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED (five wrong current passwords in 15 minutes).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "wawu-id": []
+          }
+        ],
+        "summary": "Z2: change the password of the signed-in account. Every other device is signed out; this one gets a new pair to keep using.",
+        "tags": [
+          "Auth",
+          "app"
+        ]
+      }
+    },
     "/auth/forgot-password": {
       "post": {
         "operationId": "forgotPassword",
@@ -783,7 +914,10 @@
               "EMAIL_ALREADY_PROVEN",
               "EMAIL_CODE_INVALID",
               "EMAIL_CODE_LOCKED",
-              "EMAIL_CODE_RESEND_TOO_SOON"
+              "EMAIL_CODE_RESEND_TOO_SOON",
+              "CURRENT_PASSWORD_WRONG",
+              "PASSWORD_UNCHANGED",
+              "PASSWORD_NOT_SET"
             ],
             "description": "Machine-readable cause, when there is one. A body without it is a plain refusal (a 400 from validation, a 401 wrong password, a 409 taken email or phone)."
           },
@@ -1068,6 +1202,60 @@
         },
         "required": [
           "data"
+        ]
+      },
+      "LogoutDto": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "description": "The refresh token this device holds."
+          }
+        },
+        "required": [
+          "refreshToken"
+        ]
+      },
+      "SignedOutSchema": {
+        "type": "object",
+        "properties": {
+          "signedOut": {
+            "type": "boolean",
+            "example": true
+          }
+        },
+        "required": [
+          "signedOut"
+        ]
+      },
+      "SignedOutAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SignedOutSchema"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "ChangePasswordDto": {
+        "type": "object",
+        "properties": {
+          "currentPassword": {
+            "type": "string",
+            "description": "The password the account has now."
+          },
+          "newPassword": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128,
+            "description": "The same length rule as a reset (8 to 128 characters)."
+          }
+        },
+        "required": [
+          "currentPassword",
+          "newPassword"
         ]
       },
       "ForgotPasswordDto": {

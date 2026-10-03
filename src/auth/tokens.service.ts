@@ -196,6 +196,35 @@ export class TokensService {
   }
 
   /**
+   * Sign out one device: delete the stored record of the presented refresh
+   * token. An expired token is still taken out (it was signed by this service
+   * and is only being cleaned up); a forged, wrong-type or unknown one does
+   * nothing. Never throws for a bad token and never says which case it was.
+   */
+  async revokeRefreshToken(presented: string): Promise<void> {
+    let payload: { sub?: unknown; type?: unknown };
+    try {
+      payload = await this.jwt.verifyAsync(presented, {
+        algorithms: ['RS256'],
+        ignoreExpiration: true,
+      });
+    } catch {
+      return;
+    }
+    if (payload.type !== 'refresh' || typeof payload.sub !== 'string') return;
+
+    const records = await this.prisma.refreshToken
+      .findMany({ where: { userId: payload.sub } })
+      .catch(() => []);
+    for (const record of records) {
+      if (await argon2.verify(record.tokenHash, presented)) {
+        await this.prisma.refreshToken.deleteMany({ where: { id: record.id } });
+        return;
+      }
+    }
+  }
+
+  /**
    * Validate a presented refresh token, delete the stored record (single-use
    * rotation), and issue a new pair from the user's current state.
    */

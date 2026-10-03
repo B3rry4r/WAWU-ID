@@ -309,6 +309,30 @@ Request: { "refreshToken": "eyJ..." }
 Response 200: { "data": { "accessToken": "eyJ...", "refreshToken": "eyJ..." } }
 ```
 
+### POST /auth/logout (SETTINGS-03)
+```json
+Request: { "refreshToken": "eyJ..." }
+Response 200: { "data": { "signedOut": true } }
+```
+The presented refresh token stops working (the account's other tokens are
+untouched). The same 200 for a live, an expired, an already-used, a forged and
+an unknown token, so it tells nobody which is which. 400 validation, 429
+RATE_LIMITED (30 a minute per client address).
+
+### POST /auth/change-password  (Authorization: Bearer <access token>) (SETTINGS-03)
+```json
+Request: { "currentPassword": "...", "newPassword": "8 to 128 characters" }
+Response 200: { "data": { "accessToken": "eyJ...", "refreshToken": "eyJ..." } }
+```
+Every refresh token and pending reset link of the account is deleted in the
+same transaction as the new hash; the response is a fresh pair for the
+calling device. Other devices cannot refresh and are out when their access
+token (`JWT_EXPIRES_IN`) runs out.
+Errors: 400 CURRENT_PASSWORD_WRONG, 400 PASSWORD_UNCHANGED, 400 validation;
+401 SESSION_INVALID; 409 PASSWORD_NOT_SET; 429 RATE_LIMITED (five wrong current
+passwords in 15 minutes per account, the sixth waits even with the right one;
+a right password gives the tries back).
+
 ### POST /auth/forgot-password
 ```json
 Request: { "identifier": "ada@email.com", "method": "email" }
