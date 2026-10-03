@@ -125,6 +125,8 @@ model WawuUser {
   emailVerificationCodes EmailVerificationCode[]
   consents         Consent[]
   phoneVerification PhoneVerification?
+  signupProgress   SignupProgress?
+  signupEmailCode  SignupEmailCode?
 
   @@map("wawu_users")
 }
@@ -261,6 +263,52 @@ model PhoneGuessBudget {
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
   @@map("phone_guess_budgets")
+}
+
+// Where a mobile sign-up stands after its phone code (AUTH-05). One row per
+// account that proved its phone at sign-up (phone_verified_at set), made the
+// first time its progress is asked for. Accounts without phone_verified_at
+// (every web, legacy and phone-only account) never get one: they are not in
+// the sign-up sequence at all. Each
+// timestamp is a step done, in order: the email step (proven, or put off),
+// then A11 for an earning account, or A12 and A13 for a discovering one.
+// The steps and their order live in src/auth/signup-sequence.ts.
+model SignupProgress {
+  userId         String    @id @map("user_id") @db.Uuid
+  // The email step was put off ("Later"). Proving the email (email_verified on
+  // wawu_users) also completes it.
+  emailSkippedAt DateTime? @map("email_skipped_at")
+  creatorSetupAt DateTime? @map("creator_setup_at")
+  interestsAt    DateTime? @map("interests_at")
+  followsAt      DateTime? @map("follows_at")
+  completedAt    DateTime? @map("completed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("signup_progress")
+}
+
+// The code mailed to a signed-in mobile account to prove its email (AUTH-05).
+// One row per account; a new code replaces the old. The code proves only the
+// address it was sent to (`emailHash`, sha256 of it, so the row holds no
+// address), and is dead once the account's email is no longer that address.
+// The code is stored hashed (argon2).
+model SignupEmailCode {
+  userId     String   @id @map("user_id") @db.Uuid
+  emailHash  String   @map("email_hash")
+  codeHash   String   @map("code_hash")
+  expiresAt  DateTime @map("expires_at")
+  lastSentAt DateTime  @map("last_sent_at")
+  // Set when the code proved the email. The row stays until the next code,
+  // so a repeat of the same confirm (a double tap) gets the same success.
+  usedAt     DateTime? @map("used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("signup_email_codes")
 }
 
 // Fixed-window counters shared by every instance: texts per client address,

@@ -26,6 +26,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { phoneForClients } from './released-phone';
 import { TokenPair, TokensService } from './tokens.service';
 
 export interface UserResponse {
@@ -124,7 +125,7 @@ export class AuthService {
         .filter(Boolean)
         .join(' '),
       email: user.email,
-      phone: user.phone,
+      phone: phoneForClients(user.phone),
       country: user.country,
       state: user.state ?? null,
       gender: user.gender ?? null,
@@ -990,7 +991,7 @@ export class AuthService {
         // route group, which Next.js strips from the URL (/auth/... 404s).
         const resetUrl = `${appUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
         await this.mail.sendPasswordReset(user.email, resetUrl, user.firstName);
-      } else if (user.phone) {
+      } else if (phoneForClients(user.phone)) {
         // Mobile apps: send a 6-digit reset code over WhatsApp.
         await this.otp.generateAndSend(user.phone);
       }

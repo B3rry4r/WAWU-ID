@@ -1,14 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, MaxLength, MinLength } from 'class-validator';
 
-export class PhoneVerifyStartDto {
+/** Where a sign-up stands before its phone code: the phone and the sign-up's secret. */
+export class SignupResumeDto {
   @ApiProperty({ minLength: 7, maxLength: 25 })
   @IsString()
   @MinLength(7)
   @MaxLength(25)
   phone!: string;
 
-  /** The secret `POST /auth/signup` returned for this sign-up. */
   @ApiProperty({
     minLength: 1,
     maxLength: 200,

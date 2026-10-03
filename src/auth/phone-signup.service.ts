@@ -21,6 +21,10 @@ import {
   type PhoneVerificationConfig,
 } from './phone-verification.config';
 import { RateLimiter } from './rate-limiter.service';
+import {
+  signupSequenceConfig,
+  type SignupSequenceConfig,
+} from './signup-sequence.config';
 import type { TokenPair } from './tokens.service';
 
 /** What the sign-up screen needs to draw the code step and its countdown. */
@@ -32,6 +36,28 @@ export interface PhoneCodeSent {
   /** Seconds until another code can be requested. */
   resendIn: number;
 }
+
+/**
+ * Where a sign-up stands before its phone code (AUTH-05), for an app that was
+ * closed in the middle: `phone` while the sign-up this secret belongs to can
+ * still be confirmed, `details` when there is none (never made, replaced by a
+ * newer sign-up, expired, or already confirmed): start again at A3, or sign in.
+ */
+export type SignupResume =
+  | {
+      step: 'phone';
+      /** The number as stored. */
+      phone: string;
+      /** Seconds the last code sent can still be used for (0: ask for a new one). */
+      expiresIn: number;
+      /** Seconds until another code can be asked for (0: now). */
+      resendIn: number;
+      /** The confirm call must also carry the code mailed to the email. */
+      emailCodeRequired: boolean;
+      /** 'user' or 'creator' as sent with the sign-up, or null. */
+      accountType: string | null;
+    }
+  | { step: 'details' };
 
 /** What sign-up answers: the above, plus the secret that ties the next calls to this sign-up. */
 export interface SignupStarted extends PhoneCodeSent {
@@ -96,6 +122,7 @@ const sha256 = (value: string) =>
 export class PhoneSignupService {
   private readonly logger = new Logger(PhoneSignupService.name);
   private readonly settings: PhoneVerificationConfig;
+  private readonly sequence: SignupSequenceConfig;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -106,6 +133,7 @@ export class PhoneSignupService {
     private readonly mail: MailService,
   ) {
     this.settings = phoneVerificationConfig(config);
+    this.sequence = signupSequenceConfig(config);
   }
 
   // ── sign up ────────────────────────────────────────────────────────────────
@@ -447,6 +475,50 @@ export class PhoneSignupService {
     }
     await this.limits.clearGuesses(phone);
     return this.auth.sessionFor(proven);
+  }
+
+  // ── resume ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Where the sign-up this secret belongs to stands, for an app that was
+   * closed between A3 and A4 (AUTH-05). Sends nothing and changes nothing. The
+   * answer depends only on whether the caller holds a live secret for this
+   * number, which nobody but the person who signed up can: a made-up secret,
+   * a replaced one, an expired one and a confirmed one all answer `details`,
+   * after the same single lookup by the secret's hash.
+   */
+  async resume(
+    rawPhone: string,
+    attempt: string,
+    address: string,
+  ): Promise<SignupResume> {
+    const gate = await this.limits.hit(
+      'resume-ip',
+      address,
+      this.sequence.resumeIpPerHour,
+      3600,
+    );
+    if (!gate.allowed) throw this.busy(gate.retryAfterSeconds);
+
+    const phone = normalisePhone(rawPhone);
+    const pending =
+      phone && phone.startsWith(this.settings.allowedPhonePrefix)
+        ? await this.findByAttempt(phone, attempt)
+        : null;
+    if (!pending) return { step: 'details' };
+
+    const now = Date.now();
+    const seconds = (ms: number) => Math.max(0, Math.ceil(ms / 1000));
+    return {
+      step: 'phone',
+      phone: pending.phone,
+      expiresIn: seconds(pending.expiresAt.getTime() - now),
+      resendIn: seconds(
+        pending.lastSentAt.getTime() + this.settings.resendSeconds * 1000 - now,
+      ),
+      emailCodeRequired: !!pending.claimEmail,
+      accountType: pending.user.accountType ?? null,
+    };
   }
 
   // ── internals ──────────────────────────────────────────────────────────────

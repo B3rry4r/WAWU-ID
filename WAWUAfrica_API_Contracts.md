@@ -186,6 +186,80 @@ except through it. Behind a CDN or load balancer every caller would share one ad
 have to be trusted instead. Reached directly, without nginx, a client can write its own
 `X-Real-IP`.
 
+### The sign-up sequence (AUTH-05)
+The published contract for every route the mobile app calls is `contract/openapi.json`,
+generated from the code by `npm run contract:build` (a test fails when it is out of date);
+the app generates its types from it. The order, enforced here:
+
+| step | screen | route | session |
+|---|---|---|---|
+| account type | A2 | sent with `POST /auth/signup` (`accountType`; none reads as `user`) | none |
+| details | A3 | `POST /auth/signup` | none |
+| phone | A4 | `POST /auth/phone/verify/confirm` (the first session) | none |
+| `email` | (no artboard) | `POST /auth/signup/email/start`, `/email/confirm`, or put off | yes |
+| `creator_setup` | A11 | `POST /auth/signup/progress {step}` (earning: `creator`) | yes |
+| `interests` | A12 | `POST /auth/signup/progress {step}` (discovering: `user`) | yes |
+| `follows` | A13 | `POST /auth/signup/progress {step}`, after `interests` | yes |
+
+No step runs an identity check and none opens a wallet (R-6): the only call this service
+makes to Fintava during sign-up is the text.
+
+### POST /auth/signup/resume
+For an app closed between A3 and A4. Sends nothing, changes nothing.
+```
+Request:  { phone: string, attempt: string }
+Response 200: { data: { step: 'phone', phone, expiresIn, resendIn, emailCodeRequired, accountType } }
+          or  { data: { step: 'details' } }   (no live sign-up for this secret: start again at A3, or sign in)
+Errors:   400 validation, 429 RATE_LIMITED (resume checks per address, 120 an hour, PROVISIONAL)
+```
+`expiresIn` and `resendIn` are what is left (0 means ask for a new code / resend now). A
+made-up, replaced, expired or already confirmed secret all answer `details` after the
+same single lookup by the secret's hash.
+
+### GET /auth/signup/progress  (Authorization: Bearer <access token>)
+```
+Response 200: { data: { step: 'email'|'creator_setup'|'interests'|'follows'|'done',
+                        inSequence: boolean, accountType: 'user'|'creator'|null,
+                        steps: string[], emailProven: boolean } }
+Errors:   401 SESSION_INVALID (no token, a refresh token, expired, another key, a suspended or deleted account)
+```
+An account is in the sequence when it proved its phone at sign-up (`phone_verified_at`);
+its record (`signup_progress`) is made the first time this is asked (parallel first
+calls make one record and give the same answer). Every web, legacy
+and phone-only account answers `step: 'done', inSequence: false` and gets no record.
+
+### POST /auth/signup/progress  (Bearer)
+```
+Request:  { step: 'email'|'creator_setup'|'interests'|'follows' }
+Response 200: the progress, as above
+Errors:   409 SIGNUP_STEP_OUT_OF_ORDER (not the next step, or not this account's),
+          409 SIGNUP_ALREADY_FINISHED, 401 SESSION_INVALID
+```
+Completes the next step only. `email` here means "Later" (the email stays unproven and can
+be proven at any time). A step already done answers the progress unchanged.
+
+### POST /auth/signup/email/start  (Bearer)
+Mails a 6-digit code to the account's own email (nothing else is ever mailed from here).
+```
+Response 200: { data: { email, expiresIn: 600, resendIn: 60 } }
+Errors:   409 EMAIL_NOT_SET, 409 EMAIL_ALREADY_PROVEN,
+          429 EMAIL_CODE_RESEND_TOO_SOON (60 s gap, PROVISIONAL), 429 RATE_LIMITED (5 a day per account, PROVISIONAL)
+```
+The code lives 600 s, the "10 minutes" the mail states. Only hashes are stored: the code
+(argon2) and the address (sha256), so a code proves only the address it was sent to.
+
+### POST /auth/signup/email/confirm  (Bearer)
+```
+Request:  { code: '123456' }
+Response 200: the progress, as above, with emailProven: true
+Errors:   400 EMAIL_CODE_INVALID, 429 EMAIL_CODE_LOCKED (the phone code's rules: the fourth
+          wrong code in a row waits 900 s, 12 a day), 409 EMAIL_NOT_SET, 409 EMAIL_ALREADY_PROVEN
+```
+The same right code sent again while it lives (a double tap, at once or after) answers the
+same success; any other code once the email is proven answers 409 EMAIL_ALREADY_PROVEN.
+A proven email receives the reset link (`POST /auth/forgot-password` with `method: 'email'`)
+and the other mail this service sends; an unproven one still does not.
+
 ### Login rule (POST /auth/login)
 An account with an email must have confirmed it, **or** have proven its phone
 (`phone_verified_at` set by `/auth/phone/verify/confirm`). Every account that has

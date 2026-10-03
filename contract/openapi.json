@@ -1,0 +1,1321 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/auth/signup": {
+      "post": {
+        "operationId": "signup",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupStartedAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation, PHONE_INVALID, PHONE_NOT_SUPPORTED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The email or phone is already taken by another account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "PHONE_CODE_RESEND_TOO_SOON, RATE_LIMITED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "SMS_NOT_CONFIGURED, SMS_SEND_FAILED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "A3: create the account and text a code to the phone. No session yet (R-36).",
+        "tags": [
+          "Auth",
+          "app"
+        ]
+      }
+    },
+    "/auth/phone/verify/start": {
+      "post": {
+        "operationId": "phoneVerifyStart",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhoneVerifyStartDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhoneCodeSentAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation, PHONE_INVALID, PHONE_NOT_SUPPORTED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "PHONE_CODE_RESEND_TOO_SOON, RATE_LIMITED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "SMS_NOT_CONFIGURED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "A4: send another code. The same answer for any number and secret; only a live sign-up is texted.",
+        "tags": [
+          "Auth",
+          "app"
+        ]
+      }
+    },
+    "/auth/phone/verify/confirm": {
+      "post": {
+        "operationId": "phoneVerifyConfirm",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhoneVerifyConfirmDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation, PHONE_CODE_INVALID (also for a secret that is not live: restart sign-up after the fourth 400 in a row).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "PHONE_ALREADY_CONFIRMED, or the email or phone was taken meanwhile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "PHONE_CODE_LOCKED, RATE_LIMITED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "A4: check the texted code (and the mailed one when sign-up asked for it). Right: the first session.",
+        "tags": [
+          "Auth",
+          "app"
+        ]
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "login",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation: a field missing or of the wrong type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong password.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "EMAIL_NOT_VERIFIED, PHONE_NOT_CONFIRMED (a sign-up whose phone code was never entered: resume it).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "USER_NOT_IN_WAWUID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "A22: sign in by email or phone, and password.",
+        "tags": [
+          "Auth",
+          "app"
+        ]
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "operationId": "refresh",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPairAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation: a field missing or of the wrong type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Trade a refresh token for a new pair; the old one stops working.",
+        "tags": [
+          "Auth",
+          "app"
+        ]
+      }
+    },
+    "/auth/forgot-password": {
+      "post": {
+        "operationId": "forgotPassword",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotPasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetRequestedAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation: a field missing or of the wrong type, or a `method` other than `sms` or `email`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "A23: ask for a reset. The same answer whether or not an account exists; a link is mailed only to a proven email.",
+        "tags": [
+          "Auth",
+          "app"
+        ]
+      }
+    },
+    "/auth/signup/resume": {
+      "post": {
+        "operationId": "signupResume",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupResumeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupResumeAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Where a sign-up stands before its phone code, for an app that was closed between A3 and A4. Sends nothing.",
+        "tags": [
+          "app"
+        ]
+      }
+    },
+    "/auth/signup/progress": {
+      "get": {
+        "operationId": "signupProgress",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupProgressAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_INVALID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "wawu-id": []
+          }
+        ],
+        "summary": "The next sign-up step for the signed-in account, after the phone code. `done` for every account not in the sequence.",
+        "tags": [
+          "app"
+        ]
+      },
+      "post": {
+        "operationId": "signupCompleteStep",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupProgressDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupProgressAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_INVALID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SIGNUP_STEP_OUT_OF_ORDER, SIGNUP_ALREADY_FINISHED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "wawu-id": []
+          }
+        ],
+        "summary": "Complete the next step (A11, A12, A13), or put the email off. A step already done answers the progress unchanged.",
+        "tags": [
+          "app"
+        ]
+      }
+    },
+    "/auth/signup/email/start": {
+      "post": {
+        "operationId": "signupEmailStart",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailCodeSentAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_INVALID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "EMAIL_NOT_SET, EMAIL_ALREADY_PROVEN.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "EMAIL_CODE_RESEND_TOO_SOON, RATE_LIMITED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "wawu-id": []
+          }
+        ],
+        "summary": "Mail a code to the signed-in account's own email, to prove it (then a reset link can reach it).",
+        "tags": [
+          "app"
+        ]
+      }
+    },
+    "/auth/signup/email/confirm": {
+      "post": {
+        "operationId": "signupEmailConfirm",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupEmailConfirmDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupProgressAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation, EMAIL_CODE_INVALID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_INVALID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "EMAIL_NOT_SET, EMAIL_ALREADY_PROVEN.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "EMAIL_CODE_LOCKED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "wawu-id": []
+          }
+        ],
+        "summary": "Check the mailed code. Right: the email is proven and the progress moves on.",
+        "tags": [
+          "app"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "WAWU ID",
+    "description": "The sign-in service: the routes the mobile app calls.\n\nEvery success body is `{ data: ... }`, exactly as described here (no\ninterceptor). Every error body is ErrorBody. Generated from the code by\n`npm run contract:build`; never edited by hand.",
+    "version": "1.0.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "wawu-id": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {
+      "SignupDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "phone": {
+            "type": "string",
+            "minLength": 7,
+            "maxLength": 25,
+            "description": "As typed: 0803..., +234... or 234..."
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          },
+          "occupation": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "accountType": {
+            "type": "string",
+            "enum": [
+              "user",
+              "creator"
+            ],
+            "description": "The A2 pick: discover is `user`, earn is `creator`. Without it the sequence treats the account as `user`."
+          }
+        },
+        "required": [
+          "email",
+          "phone",
+          "password"
+        ]
+      },
+      "SignupStartedSchema": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "The number as stored (+234...)."
+          },
+          "expiresIn": {
+            "type": "number",
+            "description": "Seconds the code can be used for."
+          },
+          "resendIn": {
+            "type": "number",
+            "description": "Seconds until another code can be asked for."
+          },
+          "attempt": {
+            "type": "string",
+            "description": "Shown once. Keep it with the sign-up (it survives the app closing) and send it on every phone/verify and resume call."
+          },
+          "emailCodeRequired": {
+            "type": "boolean",
+            "description": "The confirm call must also carry `emailCode`, the code mailed to the email."
+          }
+        },
+        "required": [
+          "phone",
+          "expiresIn",
+          "resendIn",
+          "attempt",
+          "emailCodeRequired"
+        ]
+      },
+      "SignupStartedAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SignupStartedSchema"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "ErrorBody": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "USER_NOT_IN_WAWUID",
+              "EMAIL_NOT_VERIFIED",
+              "PHONE_NOT_CONFIRMED",
+              "PHONE_INVALID",
+              "PHONE_NOT_SUPPORTED",
+              "PHONE_CODE_INVALID",
+              "PHONE_CODE_LOCKED",
+              "PHONE_CODE_RESEND_TOO_SOON",
+              "PHONE_ALREADY_CONFIRMED",
+              "RATE_LIMITED",
+              "SMS_NOT_CONFIGURED",
+              "SMS_SEND_FAILED",
+              "SESSION_INVALID",
+              "SIGNUP_STEP_OUT_OF_ORDER",
+              "SIGNUP_ALREADY_FINISHED",
+              "EMAIL_NOT_SET",
+              "EMAIL_ALREADY_PROVEN",
+              "EMAIL_CODE_INVALID",
+              "EMAIL_CODE_LOCKED",
+              "EMAIL_CODE_RESEND_TOO_SOON"
+            ],
+            "description": "Machine-readable cause, when there is one. A body without it is a plain refusal (a 400 from validation, a 401 wrong password, a 409 taken email or phone)."
+          },
+          "message": {
+            "type": "string",
+            "description": "A sentence for people. Validation errors join theirs with \", \"."
+          },
+          "retryAfterSeconds": {
+            "type": "number",
+            "description": "Seconds to wait, with every 429 (also sent as a Retry-After header)."
+          }
+        },
+        "required": [
+          "statusCode",
+          "message"
+        ]
+      },
+      "PhoneVerifyStartDto": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "minLength": 7,
+            "maxLength": 25
+          },
+          "attempt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "The secret `POST /auth/signup` returned for this sign-up."
+          }
+        },
+        "required": [
+          "phone",
+          "attempt"
+        ]
+      },
+      "PhoneCodeSentSchema": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "The number as stored (+234...)."
+          },
+          "expiresIn": {
+            "type": "number",
+            "description": "Seconds the code can be used for."
+          },
+          "resendIn": {
+            "type": "number",
+            "description": "Seconds until another code can be asked for."
+          }
+        },
+        "required": [
+          "phone",
+          "expiresIn",
+          "resendIn"
+        ]
+      },
+      "PhoneCodeSentAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PhoneCodeSentSchema"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "PhoneVerifyConfirmDto": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "minLength": 7,
+            "maxLength": 25
+          },
+          "attempt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "The secret `POST /auth/signup` returned for this sign-up."
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$"
+          },
+          "emailCode": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "description": "Required when sign-up answered `emailCodeRequired: true`."
+          }
+        },
+        "required": [
+          "phone",
+          "attempt",
+          "code"
+        ]
+      },
+      "TickStateSchema": {
+        "type": "object",
+        "properties": {
+          "verified": {
+            "type": "boolean"
+          },
+          "expiresAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "verified",
+          "expiresAt"
+        ]
+      },
+      "VerificationStateSchema": {
+        "type": "object",
+        "properties": {
+          "creator": {
+            "$ref": "#/components/schemas/TickStateSchema"
+          },
+          "professional": {
+            "$ref": "#/components/schemas/TickStateSchema"
+          }
+        },
+        "required": [
+          "creator",
+          "professional"
+        ]
+      },
+      "SessionUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "nullable": true
+          },
+          "phone": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string",
+            "nullable": true
+          },
+          "state": {
+            "type": "string",
+            "nullable": true
+          },
+          "gender": {
+            "type": "string",
+            "nullable": true
+          },
+          "occupation": {
+            "type": "string",
+            "nullable": true
+          },
+          "accountType": {
+            "type": "string",
+            "enum": [
+              "user",
+              "creator"
+            ],
+            "description": "Present only when the account has one (chosen at mobile sign-up, A2). Absent for every account that never said."
+          },
+          "verificationTier": {
+            "type": "string",
+            "description": "LEGACY. Read `verification`."
+          },
+          "trustScore": {
+            "type": "number",
+            "description": "LEGACY."
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationStateSchema"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "fullName",
+          "email",
+          "phone",
+          "country",
+          "state",
+          "gender",
+          "occupation",
+          "verificationTier",
+          "trustScore",
+          "verification",
+          "status"
+        ]
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string"
+          },
+          "refreshToken": {
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/SessionUser"
+          }
+        },
+        "required": [
+          "accessToken",
+          "refreshToken",
+          "user"
+        ]
+      },
+      "SessionAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Session"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "LoginDto": {
+        "type": "object",
+        "properties": {
+          "identifier": {
+            "type": "string",
+            "description": "Email, or phone as typed (0803... or +234...)."
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "identifier",
+          "password"
+        ]
+      },
+      "RefreshDto": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "refreshToken"
+        ]
+      },
+      "TokenPairSchema": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string"
+          },
+          "refreshToken": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accessToken",
+          "refreshToken"
+        ]
+      },
+      "TokenPairAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/TokenPairSchema"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "ForgotPasswordDto": {
+        "type": "object",
+        "properties": {
+          "identifier": {
+            "type": "string",
+            "description": "Email or phone number."
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "sms",
+              "email"
+            ],
+            "description": "Without it, `sms`. The app sends `email`."
+          }
+        },
+        "required": [
+          "identifier"
+        ]
+      },
+      "ResetRequested": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "If an account exists, a reset code has been sent."
+          },
+          "expiresInSeconds": {
+            "type": "number",
+            "description": "The emailed link's lifetime in seconds. Sent only when `method` is `email`, the same figure whether or not an account exists."
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "ResetRequestedAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ResetRequested"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "SignupResumeDto": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "minLength": 7,
+            "maxLength": 25
+          },
+          "attempt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "The secret `POST /auth/signup` returned for this sign-up."
+          }
+        },
+        "required": [
+          "phone",
+          "attempt"
+        ]
+      },
+      "SignupResumeSchema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "phone",
+              "details"
+            ],
+            "description": "`phone`: the sign-up waits for its texted code (A4). `details`: there is no sign-up to resume (never made, replaced, expired or already confirmed): start again at A3, or sign in."
+          },
+          "phone": {
+            "type": "string",
+            "description": "With `phone`: the number as stored."
+          },
+          "expiresIn": {
+            "type": "number",
+            "description": "With `phone`: seconds the last code can still be used for (0: ask for a new one)."
+          },
+          "resendIn": {
+            "type": "number",
+            "description": "With `phone`: seconds until another code can be asked for."
+          },
+          "emailCodeRequired": {
+            "type": "boolean",
+            "description": "With `phone`: the confirm call must also carry `emailCode`."
+          },
+          "accountType": {
+            "type": "string",
+            "enum": [
+              "user",
+              "creator"
+            ],
+            "nullable": true,
+            "description": "With `phone`: the account type sent with the sign-up."
+          }
+        },
+        "required": [
+          "step"
+        ]
+      },
+      "SignupResumeAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SignupResumeSchema"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "SignupProgressSchema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "email",
+              "creator_setup",
+              "interests",
+              "follows",
+              "done"
+            ],
+            "description": "The next step: `email` (prove the email, or put it off), `creator_setup` (A11), `interests` (A12), `follows` (A13), or `done`."
+          },
+          "inSequence": {
+            "type": "boolean",
+            "description": "False for an account that did not come through the mobile sign-up: there is nothing to finish."
+          },
+          "accountType": {
+            "type": "string",
+            "enum": [
+              "user",
+              "creator"
+            ],
+            "nullable": true
+          },
+          "steps": {
+            "type": "array",
+            "description": "This account's steps after the phone code, in order.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "email",
+                "creator_setup",
+                "interests",
+                "follows"
+              ]
+            }
+          },
+          "emailProven": {
+            "type": "boolean",
+            "description": "The email has been proven by a mailed code."
+          }
+        },
+        "required": [
+          "step",
+          "inSequence",
+          "accountType",
+          "steps",
+          "emailProven"
+        ]
+      },
+      "SignupProgressAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SignupProgressSchema"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "SignupProgressDto": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "email",
+              "creator_setup",
+              "interests",
+              "follows"
+            ],
+            "description": "Must be the next step. `email` puts the email off; proving it is POST /auth/signup/email/confirm."
+          }
+        },
+        "required": [
+          "step"
+        ]
+      },
+      "EmailCodeSentSchema": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The account's own email, where the code went."
+          },
+          "expiresIn": {
+            "type": "number",
+            "description": "Seconds the code can be used for."
+          },
+          "resendIn": {
+            "type": "number",
+            "description": "Seconds until another code can be asked for."
+          }
+        },
+        "required": [
+          "email",
+          "expiresIn",
+          "resendIn"
+        ]
+      },
+      "EmailCodeSentAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/EmailCodeSentSchema"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "SignupEmailConfirmDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "description": "The code mailed to the email."
+          }
+        },
+        "required": [
+          "code"
+        ]
+      }
+    }
+  }
+}
