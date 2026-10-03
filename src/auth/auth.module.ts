@@ -11,6 +11,9 @@ import { AuthService } from './auth.service';
 import { InternalController } from './internal.controller';
 import { PhoneSignupService } from './phone-signup.service';
 import { DbRateLimiter, RateLimiter } from './rate-limiter.service';
+import { SessionReader } from './session-reader';
+import { SignupSequenceController } from './signup-sequence.controller';
+import { SignupSequenceService } from './signup-sequence.service';
 import { TokensService } from './tokens.service';
 
 @Module({
@@ -30,11 +33,13 @@ import { TokensService } from './tokens.service';
       }),
     }),
   ],
-  controllers: [AuthController, InternalController],
+  controllers: [AuthController, SignupSequenceController, InternalController],
   providers: [
     AuthService,
     TokensService,
     PhoneSignupService,
+    SignupSequenceService,
+    SessionReader,
     { provide: RateLimiter, useClass: DbRateLimiter },
   ],
   exports: [TokensService],
