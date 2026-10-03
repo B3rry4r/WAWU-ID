@@ -28,9 +28,10 @@
 //
 // `apply` writes every old phone to the table g16_phone_releases first, in the
 // same transaction, and `revert` puts each one back from there (refusing, and
-// changing nothing, if the number, in any spelling, is held by a row other
-// than the set's recorded keeper and the rows being restored), then
-// drops the table. Neither touches any other column (updated_at included), so
+// changing nothing, if the number, in any spelling, is held by a row that
+// apply did not see holding it: apply records every row of each set it
+// touched, keeper, released and held, in g16_phone_members), then
+// drops both tables. Neither touches any other column (updated_at included), so
 // a revert leaves every row byte for byte as it was. `report` prints ids and
 // masked numbers only.
 import { createRequire } from 'node:module';
@@ -38,8 +39,10 @@ import pg from 'pg';
 
 const require = createRequire(import.meta.url);
 let normalisePhone;
+let revertClashes;
 try {
   ({ normalisePhone } = require('../../dist/common/phone.util.js'));
+  ({ revertClashes } = require('../../dist/auth/g16-revert.js'));
 } catch {
   console.error(
     'Run `npm run build` first: this uses dist/common/phone.util.js.',
@@ -134,9 +137,21 @@ try {
         old_phone text NOT NULL,
         keeper_id uuid NOT NULL,
         released_at timestamptz NOT NULL DEFAULT now())`);
+    // Every row apply saw holding a number it touched (keeper, released,
+    // held), so revert can tell them from a row that took the number later.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS g16_phone_members (
+        user_id uuid PRIMARY KEY REFERENCES wawu_users(id) ON DELETE CASCADE,
+        phone text NOT NULL)`);
     const sets = await duplicateSets(client);
     let released = 0;
     for (const s of sets) {
+      for (const m of [s.keeper, ...s.release, ...s.hold]) {
+        await client.query(
+          'INSERT INTO g16_phone_members (user_id, phone) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [m.id, m.phone],
+        );
+      }
       for (const r of s.release) {
         await client.query(
           'INSERT INTO g16_phone_releases (user_id, old_phone, keeper_id) VALUES ($1, $2, $3)',
@@ -158,25 +173,16 @@ try {
     const { rows } = await client.query(
       'SELECT user_id, old_phone, keeper_id FROM g16_phone_releases ORDER BY released_at',
     );
-    // A clash is any row, other than the set's recorded keeper and the rows
-    // being restored, that holds the number in ANY spelling (0803..., +234...,
-    // 234..., spaced), or the exact old text (the column is unique).
+    // A clash is a row apply did not see holding the number in ANY spelling
+    // (0803..., +234..., 234..., spaced), or any row on the exact old text
+    // (the column is unique): src/auth/g16-revert.ts.
+    const { rows: members } = await client.query(
+      'SELECT user_id, phone FROM g16_phone_members',
+    );
     const { rows: live } = await client.query(
       'SELECT id, phone FROM wawu_users',
     );
-    const restoring = new Set(rows.map((r) => r.user_id));
-    const clashes = rows.filter((r) => {
-      const number = normalisePhone(r.old_phone);
-      return live.some(
-        (u) =>
-          u.id !== r.user_id &&
-          !restoring.has(u.id) &&
-          (u.phone === r.old_phone ||
-            (u.id !== r.keeper_id &&
-              number !== null &&
-              normalisePhone(u.phone) === number)),
-      );
-    });
+    const clashes = revertClashes(rows, members, live, normalisePhone);
     if (clashes.length) {
       await client.query('ROLLBACK');
       console.error(
@@ -191,6 +197,7 @@ try {
         ]);
       }
       await client.query('DROP TABLE g16_phone_releases');
+      await client.query('DROP TABLE g16_phone_members');
       await client.query('COMMIT');
       console.log(`restored ${rows.length} row(s)`);
     }
