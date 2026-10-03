@@ -88,7 +88,7 @@ describe('a pending mobile sign-up holds no session', () => {
       },
       refreshToken: {
         create: jest.fn(),
-        deleteMany: jest.fn(),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
         delete: jest.fn(),
         findMany: jest.fn(async () => [
           {
@@ -98,8 +98,15 @@ describe('a pending mobile sign-up holds no session', () => {
           },
         ]),
       },
-      $transaction: jest.fn((ops: unknown[]) =>
-        Promise.all(ops.map((o) => Promise.resolve(o))).then(() => [row]),
+      // A refresh runs its work in a callback under the account's row lock
+      // (SETTINGS-03); the other callers pass a list of operations.
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      $transaction: jest.fn((arg: unknown) =>
+        typeof arg === 'function'
+          ? (arg as (tx: unknown) => unknown)(prisma)
+          : Promise.all((arg as unknown[]).map((o) => Promise.resolve(o))).then(
+              () => [row],
+            ),
       ),
     };
     const jwt = {

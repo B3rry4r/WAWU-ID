@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument, @typescript-eslint/require-await -- an in-memory stand-in for the few Prisma calls, rows are untyped by design */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument -- an in-memory stand-in for the few Prisma calls, rows are untyped by design */
 import { HttpException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { WawuUser } from '@prisma/client';
@@ -31,6 +31,7 @@ function fakePrisma() {
   let refresh: Row[] = [];
   let resets: Row[] = [];
   let seq = 0;
+  const locks = new Map<string, Promise<void>>();
   const api: any = {
     users,
     get refresh() {
@@ -66,11 +67,16 @@ function fakePrisma() {
         refresh = refresh.filter((r) => r.id !== where.id);
         return Promise.resolve();
       },
-      deleteMany: ({ where }: Row) => {
-        refresh = refresh.filter(
-          (r) => r.userId !== where.userId && r.id !== where.id,
+      deleteMany: async ({ where }: Row) => {
+        const before = refresh.length;
+        refresh = refresh.filter((r) =>
+          where.id !== undefined
+            ? r.id !== where.id
+            : r.userId !== where.userId,
         );
-        return Promise.resolve();
+        // Yield, as a real round trip does, so racing calls interleave.
+        await new Promise((r) => setTimeout(r, Math.random() * 3));
+        return { count: before - refresh.length };
       },
     },
     passwordResetToken: {
@@ -79,12 +85,31 @@ function fakePrisma() {
         return Promise.resolve();
       },
     },
+    // A row lock per account, held until the transaction ends (FOR UPDATE).
+    // `locking: false` is the revert proof: the lock does nothing.
+    locking: true,
     $transaction: async (fn: (tx: unknown) => unknown) => {
       if (api.failNextTransaction) {
         api.failNextTransaction = false;
         throw new Error('database down');
       }
-      return fn(api);
+      const held: Array<() => void> = [];
+      const tx = Object.create(api);
+      tx.$queryRaw = async (_s: unknown, userId: string) => {
+        if (!api.locking) return;
+        while (locks.get(userId)) await locks.get(userId);
+        let release!: () => void;
+        locks.set(userId, new Promise<void>((r) => (release = r)));
+        held.push(() => {
+          locks.delete(userId);
+          release();
+        });
+      };
+      try {
+        return await fn(tx);
+      } finally {
+        held.forEach((h) => h());
+      }
     },
   };
   return api;
@@ -435,6 +460,103 @@ describe('SETTINGS-03: change password and sign out', () => {
       expect(r.status).toBe(429);
       expect(r.body.code).toBe('RATE_LIMITED');
       await expect(service.logout('x', '10.0.0.10')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('a refresh in flight while the account is revoked', () => {
+    jest.setTimeout(120_000);
+    const TRIALS = 12;
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    it('a user who changes the password leaves no working session on a device that was refreshing at that moment', async () => {
+      for (let i = 0; i < TRIALS; i++) {
+        prisma = fakePrisma();
+        prisma.users.set('alice', { ...alice });
+        tokens = new TokensService(
+          jwt,
+          {
+            get: (k: string) => env[k],
+            getOrThrow: (k: string) => env[k],
+          } as never,
+          { kid: 'k1' } as never,
+          prisma as never,
+        );
+        service = new SessionSecurityService(prisma as never, tokens, limiter);
+        const stale = await signIn(alice);
+        limiter = new MemoryRateLimiter();
+        service = new SessionSecurityService(prisma as never, tokens, limiter);
+        const [rotated, changed] = await Promise.allSettled([
+          wait(Math.random() * 4).then(() =>
+            tokens.rotateRefreshToken(stale.refreshToken),
+          ),
+          service.changePassword(
+            live(alice),
+            'old-password-1',
+            'new-password-2',
+          ),
+        ]);
+        expect(changed.status).toBe('fulfilled');
+        // Whatever the order: the only refresh token left is the one the
+        // password change handed this device. The stale device holds none.
+        const mine = (
+          changed as PromiseFulfilledResult<{ refreshToken: string }>
+        ).value.refreshToken;
+        if (rotated.status === 'fulfilled') {
+          expect(await refreshes(rotated.value.refreshToken)).toBe(false);
+        }
+        expect(await refreshes(stale.refreshToken)).toBe(false);
+        expect(prisma.refresh).toHaveLength(1);
+        expect(await refreshes(mine)).toBe(true);
+      }
+    });
+
+    it('a user who signs out while that device is refreshing is signed out, or the refresh was refused', async () => {
+      for (let i = 0; i < TRIALS; i++) {
+        prisma = fakePrisma();
+        prisma.users.set('alice', { ...alice });
+        tokens = new TokensService(
+          jwt,
+          {
+            get: (k: string) => env[k],
+            getOrThrow: (k: string) => env[k],
+          } as never,
+          { kid: 'k1' } as never,
+          prisma as never,
+        );
+        service = new SessionSecurityService(prisma as never, tokens, limiter);
+        const device = await signIn(alice);
+        const [rotated] = await Promise.allSettled([
+          wait(Math.random() * 4).then(() =>
+            tokens.rotateRefreshToken(device.refreshToken),
+          ),
+          service.logout(device.refreshToken, `10.1.${i}.1`),
+        ]);
+        // Logout first: the refresh is refused. Refresh first: the device
+        // was handed a newer token, and the sign-out it asked for named the
+        // older one (what the app's session counter prevents), so the old one
+        // is dead either way and nothing throws or hangs.
+        expect(await refreshes(device.refreshToken)).toBe(false);
+        if (rotated.status === 'rejected') {
+          expect(prisma.refresh).toHaveLength(0);
+        }
+      }
+    });
+
+    it('a user can refresh normally when nothing else is happening', async () => {
+      const first = await signIn(alice);
+      const second = await tokens.rotateRefreshToken(first.refreshToken);
+      expect(await refreshes(first.refreshToken)).toBe(false);
+      expect(await refreshes(second.refreshToken)).toBe(true);
+    });
+
+    it('an access token sent to sign-out ends nothing', async () => {
+      const phone = await signIn(alice);
+      const access = await jwt.signAsync(
+        { sub: 'alice' },
+        { algorithm: 'RS256', expiresIn: '15m' },
+      );
+      await service.logout(access, '10.0.0.5');
+      expect(await refreshes(phone.refreshToken)).toBe(true);
     });
   });
 });

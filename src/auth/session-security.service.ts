@@ -104,6 +104,7 @@ export class SessionSecurityService {
 
     const passwordHash = await argon2.hash(newPassword);
     const updated = await this.prisma.$transaction(async (tx) => {
+      await this.tokens.lockAccount(tx, user.id);
       const row = await tx.wawuUser.update({
         where: { id: user.id },
         data: { passwordHash },

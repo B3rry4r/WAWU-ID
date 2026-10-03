@@ -228,6 +228,50 @@ try {
   ok('an access token sent to sign-out ends nothing and answers the same',
     accessAsRefresh.status === 200 && (await tokensOf(A)) === before - 1);
 
+  // ── a refresh in flight while the account is revoked (real Postgres) ──────
+  await sql('truncate rate_counters');
+  const TRIALS = 24;
+  let survivors = 0;
+  let changeFailures = 0;
+  for (let i = 0; i < TRIALS; i++) {
+    const pw = i % 2 ? 'race-pass-b-1' : 'race-pass-a-1';
+    const cur = i === 0 ? 'ada-third-pass-3' : i % 2 ? 'race-pass-a-1' : 'race-pass-b-1';
+    const session = (await login('ada@example.test', cur)).json.data;
+    const stale = (await login('ada@example.test', cur)).json.data;
+    const [changed, rotated] = await Promise.all([
+      change(session.accessToken, cur, pw),
+      sleep((i % 6) * 10).then(() => refresh(stale.refreshToken)),
+    ]);
+    if (changed.status !== 200) {
+      changeFailures += 1;
+      continue;
+    }
+    // Whatever the order, the only session left is the one the change handed over.
+    const alive = [];
+    if (rotated.status === 200) alive.push(rotated.json.data.refreshToken);
+    alive.push(stale.refreshToken);
+    for (const t of alive) if ((await refresh(t)).status === 200) survivors += 1;
+    if ((await tokensOf(A)) !== 1) survivors += 1;
+    if ((await refresh(changed.json.data.refreshToken)).status !== 200) survivors += 1;
+  }
+  ok(`${TRIALS} trials of a refresh racing a password change: zero surviving stale sessions`,
+    survivors === 0 && changeFailures === 0, `survivors=${survivors} changeFailures=${changeFailures}`);
+
+  let logoutErrors = 0;
+  let loose = 0;
+  for (let i = 0; i < TRIALS; i++) {
+    const cur = TRIALS % 2 === 0 ? 'race-pass-b-1' : 'race-pass-a-1';
+    const d = (await login('ada@example.test', cur)).json.data;
+    const [out, rot] = await Promise.all([
+      logout(d.refreshToken),
+      sleep(i % 4 === 0 ? 0 : (i * 5) % 30).then(() => refresh(d.refreshToken)),
+    ]);
+    if (out.status !== 200 || ![200, 401].includes(rot.status)) logoutErrors += 1;
+    if ((await refresh(d.refreshToken)).status === 200) loose += 1;
+  }
+  ok(`${TRIALS} trials of a refresh racing a sign-out: no error, the signed-out token never works after`,
+    logoutErrors === 0 && loose === 0, `errors=${logoutErrors} loose=${loose}`);
+
   // ── sign-out is limited per address ──────────────────────────────────────
   const ip = '203.0.113.77';
   const statuses = [];
