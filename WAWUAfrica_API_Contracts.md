@@ -224,7 +224,8 @@ Response 200: { data: { step: 'email'|'creator_setup'|'interests'|'follows'|'don
 Errors:   401 SESSION_INVALID (no token, a refresh token, expired, another key, a suspended or deleted account)
 ```
 An account is in the sequence when it proved its phone at sign-up (`phone_verified_at`);
-its record (`signup_progress`) is made the first time this is asked. Every web, legacy
+its record (`signup_progress`) is made the first time this is asked (parallel first
+calls make one record and give the same answer). Every web, legacy
 and phone-only account answers `step: 'done', inSequence: false` and gets no record.
 
 ### POST /auth/signup/progress  (Bearer)
@@ -254,6 +255,8 @@ Response 200: the progress, as above, with emailProven: true
 Errors:   400 EMAIL_CODE_INVALID, 429 EMAIL_CODE_LOCKED (the phone code's rules: the fourth
           wrong code in a row waits 900 s, 12 a day), 409 EMAIL_NOT_SET, 409 EMAIL_ALREADY_PROVEN
 ```
+The same right code sent again while it lives (a double tap, at once or after) answers the
+same success; any other code once the email is proven answers 409 EMAIL_ALREADY_PROVEN.
 A proven email receives the reset link (`POST /auth/forgot-password` with `method: 'email'`)
 and the other mail this service sends; an unproven one still does not.
 

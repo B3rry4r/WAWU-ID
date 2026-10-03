@@ -300,8 +300,11 @@ model SignupEmailCode {
   emailHash  String   @map("email_hash")
   codeHash   String   @map("code_hash")
   expiresAt  DateTime @map("expires_at")
-  lastSentAt DateTime @map("last_sent_at")
-  createdAt  DateTime @default(now()) @map("created_at")
+  lastSentAt DateTime  @map("last_sent_at")
+  // Set when the code proved the email. The row stays until the next code,
+  // so a repeat of the same confirm (a double tap) gets the same success.
+  usedAt     DateTime? @map("used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
 
   user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 

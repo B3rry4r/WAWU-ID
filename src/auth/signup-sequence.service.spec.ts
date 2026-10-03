@@ -103,6 +103,20 @@ function fakePrisma() {
         });
         return Promise.resolve(codes.get(where.userId));
       },
+      updateMany: ({
+        where,
+        data,
+      }: {
+        where: { userId: string; codeHash: string; usedAt: null };
+        data: Row;
+      }) => {
+        const row = codes.get(where.userId);
+        if (!row || row.codeHash !== where.codeHash || row.usedAt) {
+          return Promise.resolve({ count: 0 });
+        }
+        Object.assign(row, data);
+        return Promise.resolve({ count: 1 });
+      },
       deleteMany: ({
         where,
       }: {
@@ -335,7 +349,8 @@ describe('SignupSequenceService', () => {
     const out = await service.emailConfirm(user, mailed()[1]);
     expect(out).toMatchObject({ step: 'interests', emailProven: true });
     expect(fresh(user).emailVerified).toBe(true);
-    expect(prisma.codes.has(user.id)).toBe(false);
+    // The code is spent: kept only to recognise a repeat of this confirm.
+    expect(prisma.codes.get(user.id)?.usedAt).toBeInstanceOf(Date);
   });
 
   it('refuses a wrong code, then waits after the fourth wrong code in a row', async () => {
@@ -437,5 +452,75 @@ describe('SignupSequenceService', () => {
     await service.emailStart(user);
     const out = await service.emailConfirm(user, mailed()[1]);
     expect(out).toMatchObject({ step: 'interests', emailProven: true });
+  });
+
+  // ── fix round 1 (verifier D1, N4) ─────────────────────────────────────────
+
+  it('answers the first call that loses the race to make the record from the record the winner made (no 500)', async () => {
+    const user = mobile();
+    const real = prisma.signupProgress.upsert;
+    // The other first call inserts between this one's read and its insert.
+    prisma.signupProgress.upsert = (args: { where: { userId: string } }) =>
+      real(args).then(() =>
+        Promise.reject(
+          Object.assign(new Error('Unique constraint failed'), {
+            code: 'P2002',
+          }),
+        ),
+      );
+    await expect(service.progress(user)).resolves.toMatchObject({
+      step: 'email',
+      inSequence: true,
+    });
+    prisma.progress.delete(user.id);
+    await expect(service.complete(user, 'email')).resolves.toMatchObject({
+      step: 'interests',
+    });
+    expect(prisma.progress.size).toBe(1);
+  });
+
+  it('gives a repeat of a confirm that just succeeded the same success, at once or after', async () => {
+    const user = mobile();
+    await service.emailStart(user);
+    const code = mailed()[1];
+    const stale = { ...user };
+    const [a, b] = await Promise.all([
+      service.emailConfirm(stale, code),
+      service.emailConfirm(stale, code),
+    ]);
+    expect(a).toEqual(b);
+    expect(a).toMatchObject({ step: 'interests', emailProven: true });
+    await expect(service.emailConfirm(fresh(user), code)).resolves.toEqual(a);
+  });
+
+  it('still refuses any other code once the email is proven, and the used code once it has expired', async () => {
+    const user = mobile();
+    await service.emailStart(user);
+    const code = mailed()[1];
+    await service.emailConfirm(user, code);
+    expect(
+      await failure(
+        service.emailConfirm(
+          fresh(user),
+          code === '000000' ? '111111' : '000000',
+        ),
+      ),
+    ).toMatchObject({ status: 409, code: 'EMAIL_ALREADY_PROVEN' });
+    later(601);
+    expect(
+      await failure(service.emailConfirm(fresh(user), code)),
+    ).toMatchObject({ status: 409, code: 'EMAIL_ALREADY_PROVEN' });
+  });
+
+  it('does not let a used code prove the email again after it is unproven', async () => {
+    const user = mobile();
+    await service.emailStart(user);
+    const code = mailed()[1];
+    await service.emailConfirm(user, code);
+    fresh(user).emailVerified = false;
+    expect(
+      await failure(service.emailConfirm(fresh(user), code)),
+    ).toMatchObject({ status: 400, code: 'EMAIL_CODE_INVALID' });
+    expect(fresh(user).emailVerified).toBe(false);
   });
 });

@@ -11,6 +11,7 @@ import { randomBytes, randomUUID } from 'crypto';
 import type { SignOptions } from 'jsonwebtoken';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwksService } from '../jwks/jwks.service';
+import { phoneForClients } from './released-phone';
 import {
   deriveVerification,
   type VerificationState,
@@ -74,7 +75,7 @@ export class TokensService {
     return {
       sub: user.id,
       email: user.email,
-      phone: user.phone,
+      phone: phoneForClients(user.phone),
       firstName: user.firstName,
       // Carried so the profile screen can prefill all three name parts
       // without a second round trip. Null for the phone-first signups that

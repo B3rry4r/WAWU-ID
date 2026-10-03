@@ -225,6 +225,16 @@
               }
             }
           },
+          "400": {
+            "description": "Validation: a field missing or of the wrong type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Wrong password.",
             "content": {
@@ -288,6 +298,16 @@
               }
             }
           },
+          "400": {
+            "description": "Validation: a field missing or of the wrong type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "",
             "content": {
@@ -327,6 +347,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResetRequestedAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation: a field missing or of the wrong type, or a `method` other than `sms` or `email`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }

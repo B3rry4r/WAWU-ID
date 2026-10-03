@@ -170,6 +170,11 @@ export class AuthController {
   })
   @ApiBody({ type: LoginDto })
   @ApiResponse({ status: 200, type: SessionAnswer })
+  @ApiResponse({
+    status: 400,
+    type: ErrorBody,
+    description: 'Validation: a field missing or of the wrong type.',
+  })
   @ApiResponse({ status: 401, type: ErrorBody, description: 'Wrong password.' })
   @ApiResponse({
     status: 403,
@@ -195,6 +200,11 @@ export class AuthController {
   })
   @ApiBody({ type: RefreshDto })
   @ApiResponse({ status: 200, type: TokenPairAnswer })
+  @ApiResponse({
+    status: 400,
+    type: ErrorBody,
+    description: 'Validation: a field missing or of the wrong type.',
+  })
   @ApiResponse({ status: 401, type: ErrorBody })
   async refresh(@Body() dto: RefreshDto) {
     return { data: await this.auth.refresh(dto.refreshToken) };
@@ -242,6 +252,12 @@ export class AuthController {
   })
   @ApiBody({ type: ForgotPasswordDto })
   @ApiResponse({ status: 200, type: ResetRequestedAnswer })
+  @ApiResponse({
+    status: 400,
+    type: ErrorBody,
+    description:
+      'Validation: a field missing or of the wrong type, or a `method` other than `sms` or `email`.',
+  })
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     return {
       data: await this.auth.forgotPassword(dto.identifier, dto.method),

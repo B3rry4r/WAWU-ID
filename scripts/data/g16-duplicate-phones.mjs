@@ -5,12 +5,18 @@
 //
 // WHICH ROW KEEPS THE NUMBER (default, agent; the owner may override):
 //   1. the account that proved the phone (phone_verified_at; at most one can);
-//   2. else the account that signed in most recently (its newest refresh token);
-//   3. else the oldest account.
-// Every other row in the set RELEASES the number: its phone becomes
-// `released:<its id>` (the same shape an anonymised account gets,
-// `deleted:<id>`). It keeps its email, password, ticks and everything else,
-// and still signs in by email. Nothing is merged and nothing is deleted.
+//   2. else an account whose phone is its only way in (it cannot sign in by
+//      email: no email, no password, or an email never confirmed);
+//   3. else the account that signed in most recently (its newest refresh token);
+//   4. else the oldest account.
+// Every other row that CAN sign in by email (an email, a password and a
+// confirmed email) RELEASES the number: its phone becomes `released:<its id>`
+// (the same shape an anonymised account gets, `deleted:<id>`). It keeps its
+// email, password, ticks and everything else, and signs in by email. wawu-id
+// never hands the marker on as a phone: tokens and answers carry an empty
+// phone for it (src/auth/released-phone.ts). A row whose phone is its only way
+// in is NEVER released: `report` lists it under "owner to decide" and `apply`
+// leaves it as it is. Nothing is merged and nothing is deleted.
 //
 // THIS REWRITES REAL USER DATA, so only the owner runs `apply` (DECISIONS:
 // WORKFLOW section 10). It is never run by a task. `report` only reads.
@@ -22,7 +28,8 @@
 //
 // `apply` writes every old phone to the table g16_phone_releases first, in the
 // same transaction, and `revert` puts each one back from there (refusing, and
-// changing nothing, if any old phone is held by another row by then), then
+// changing nothing, if the number, in any spelling, is held by a row other
+// than the set's recorded keeper and the rows being restored), then
 // drops the table. Neither touches any other column (updated_at included), so
 // a revert leaves every row byte for byte as it was. `report` prints ids and
 // masked numbers only.
@@ -66,6 +73,7 @@ const mask = (phone) =>
 async function duplicateSets(client) {
   const { rows } = await client.query(`
     SELECT u.id, u.phone, u.created_at, u.phone_verified_at,
+           (u.email IS NOT NULL AND u.password_hash IS NOT NULL AND u.email_verified) AS email_way_in,
            (SELECT max(r.created_at) FROM refresh_tokens r WHERE r.user_id = u.id) AS last_session
       FROM wawu_users u
      WHERE u.phone NOT LIKE 'deleted:%' AND u.phone NOT LIKE 'released:%'`);
@@ -82,11 +90,18 @@ async function duplicateSets(client) {
     members.sort(
       (a, b) =>
         Number(!!b.phone_verified_at) - Number(!!a.phone_verified_at) ||
+        Number(!b.email_way_in) - Number(!a.email_way_in) ||
         time(b.last_session) - time(a.last_session) ||
         time(a.created_at) - time(b.created_at) ||
         String(a.id).localeCompare(String(b.id)),
     );
-    sets.push({ number, keeper: members[0], release: members.slice(1) });
+    const others = members.slice(1);
+    sets.push({
+      number,
+      keeper: members[0],
+      release: others.filter((r) => r.email_way_in),
+      hold: others.filter((r) => !r.email_way_in),
+    });
   }
   return sets;
 }
@@ -99,9 +114,16 @@ try {
     console.log(`${sets.length} number(s) held by more than one account`);
     for (const s of sets) {
       console.log(
-        `${mask(s.number)}  keeps: ${s.keeper.id} (${mask(s.keeper.phone)})  releases: ${s.release
-          .map((r) => `${r.id} (${mask(r.phone)})`)
-          .join(', ')}`,
+        `${mask(s.number)}  keeps: ${s.keeper.id} (${mask(s.keeper.phone)})  releases: ${
+          s.release.map((r) => `${r.id} (${mask(r.phone)})`).join(', ') ||
+          'none'
+        }${
+          s.hold.length
+            ? `  owner to decide (the phone is its only way in, not released): ${s.hold
+                .map((r) => `${r.id} (${mask(r.phone)})`)
+                .join(', ')}`
+            : ''
+        }`,
       );
     }
   } else if (mode === 'apply') {
@@ -134,12 +156,27 @@ try {
   } else {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'SELECT user_id, old_phone FROM g16_phone_releases ORDER BY released_at',
+      'SELECT user_id, old_phone, keeper_id FROM g16_phone_releases ORDER BY released_at',
     );
-    const { rows: clashes } = await client.query(
-      `SELECT g.user_id FROM g16_phone_releases g
-         JOIN wawu_users u ON u.phone = g.old_phone AND u.id <> g.user_id`,
+    // A clash is any row, other than the set's recorded keeper and the rows
+    // being restored, that holds the number in ANY spelling (0803..., +234...,
+    // 234..., spaced), or the exact old text (the column is unique).
+    const { rows: live } = await client.query(
+      'SELECT id, phone FROM wawu_users',
     );
+    const restoring = new Set(rows.map((r) => r.user_id));
+    const clashes = rows.filter((r) => {
+      const number = normalisePhone(r.old_phone);
+      return live.some(
+        (u) =>
+          u.id !== r.user_id &&
+          !restoring.has(u.id) &&
+          (u.phone === r.old_phone ||
+            (u.id !== r.keeper_id &&
+              number !== null &&
+              normalisePhone(u.phone) === number)),
+      );
+    });
     if (clashes.length) {
       await client.query('ROLLBACK');
       console.error(

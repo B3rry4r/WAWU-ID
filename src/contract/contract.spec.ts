@@ -104,4 +104,18 @@ describe('the published contract (contract/openapi.json)', () => {
       ...AFTER_PHONE_STEPS,
     ]);
   });
+
+  it('names the 400 every route answers to a malformed body, sign-in ones included', () => {
+    for (const [path, item] of Object.entries(doc.paths)) {
+      for (const [method, op] of Object.entries(
+        item as Record<string, { requestBody?: unknown; responses: object }>,
+      )) {
+        if (!op.requestBody) continue;
+        expect([`${method} ${path}`, Object.keys(op.responses)]).toEqual([
+          `${method} ${path}`,
+          expect.arrayContaining(['400']),
+        ]);
+      }
+    }
+  });
 });
