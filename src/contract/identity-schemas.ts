@@ -117,6 +117,16 @@ export class ResetRequestedAnswer {
   data!: ResetRequested;
 }
 
+export class SignedOutSchema {
+  @ApiProperty({ example: true })
+  signedOut!: boolean;
+}
+
+export class SignedOutAnswer {
+  @ApiProperty({ type: SignedOutSchema })
+  data!: SignedOutSchema;
+}
+
 export class PhoneCodeSentSchema {
   @ApiProperty({ description: 'The number as stored (+234...).' })
   phone!: string;
@@ -263,6 +273,9 @@ export const ERROR_CODES = [
   'EMAIL_CODE_INVALID',
   'EMAIL_CODE_LOCKED',
   'EMAIL_CODE_RESEND_TOO_SOON',
+  'CURRENT_PASSWORD_WRONG',
+  'PASSWORD_UNCHANGED',
+  'PASSWORD_NOT_SET',
 ] as const;
 
 export class ErrorBody {

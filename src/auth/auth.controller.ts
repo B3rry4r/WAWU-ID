@@ -6,11 +6,18 @@ import {
   Post,
   Req,
 } from '@nestjs/common';
-import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import type { Request } from 'express';
 import {
   ErrorBody,
   PhoneCodeSentAnswer,
+  SignedOutAnswer,
   ResetRequestedAnswer,
   SessionAnswer,
   SignupStartedAnswer,
@@ -18,11 +25,13 @@ import {
 } from '../contract/identity-schemas';
 import { AuthService } from './auth.service';
 import { clientAddress } from './client-address';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { ActivateDto } from './dto/activate.dto';
 import { EmailVerifyConfirmDto } from './dto/email-verify-confirm.dto';
 import { EmailVerifyStartDto } from './dto/email-verify-start.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { LogoutDto } from './dto/logout.dto';
 import { OtpStartDto } from './dto/otp-start.dto';
 import { OtpVerifyDto } from './dto/otp-verify.dto';
 import { PhoneVerifyConfirmDto } from './dto/phone-verify-confirm.dto';
@@ -32,12 +41,16 @@ import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { SignupDto } from './dto/signup.dto';
 import { PhoneSignupService } from './phone-signup.service';
+import { SessionReader } from './session-reader';
+import { SessionSecurityService } from './session-security.service';
 
 @Controller('auth')
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly phoneSignup: PhoneSignupService,
+    private readonly session: SessionReader,
+    private readonly security: SessionSecurityService,
   ) {}
 
   @Post('register')
@@ -208,6 +221,70 @@ export class AuthController {
   @ApiResponse({ status: 401, type: ErrorBody })
   async refresh(@Body() dto: RefreshDto) {
     return { data: await this.auth.refresh(dto.refreshToken) };
+  }
+
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  @ApiTags('app')
+  @ApiOperation({
+    operationId: 'logout',
+    summary:
+      'Z2: sign out. The refresh token sent stops working. The same answer for a live, a dead or an unknown token.',
+  })
+  @ApiBody({ type: LogoutDto })
+  @ApiResponse({ status: 200, type: SignedOutAnswer })
+  @ApiResponse({
+    status: 400,
+    type: ErrorBody,
+    description: 'Validation: a field missing or of the wrong type.',
+  })
+  @ApiResponse({ status: 429, type: ErrorBody, description: 'RATE_LIMITED.' })
+  async logout(@Body() dto: LogoutDto, @Req() req: Request) {
+    await this.security.logout(dto.refreshToken, clientAddress(req));
+    return { data: { signedOut: true } };
+  }
+
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiTags('app')
+  @ApiBearerAuth('wawu-id')
+  @ApiOperation({
+    operationId: 'changePassword',
+    summary:
+      'Z2: change the password of the signed-in account. Every other device is signed out; this one gets a new pair to keep using.',
+  })
+  @ApiBody({ type: ChangePasswordDto })
+  @ApiResponse({ status: 200, type: TokenPairAnswer })
+  @ApiResponse({
+    status: 400,
+    type: ErrorBody,
+    description:
+      'Validation (new password under 8 or over 128 characters), CURRENT_PASSWORD_WRONG, PASSWORD_UNCHANGED.',
+  })
+  @ApiResponse({
+    status: 401,
+    type: ErrorBody,
+    description: 'SESSION_INVALID.',
+  })
+  @ApiResponse({
+    status: 409,
+    type: ErrorBody,
+    description: 'PASSWORD_NOT_SET (an account that never had a password).',
+  })
+  @ApiResponse({
+    status: 429,
+    type: ErrorBody,
+    description: 'RATE_LIMITED (five wrong current passwords in 15 minutes).',
+  })
+  async changePassword(@Body() dto: ChangePasswordDto, @Req() req: Request) {
+    const user = await this.session.accountFor(req);
+    return {
+      data: await this.security.changePassword(
+        user,
+        dto.currentPassword,
+        dto.newPassword,
+      ),
+    };
   }
 
   @Post('otp/start')

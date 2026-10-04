@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import type { WawuUser } from '@prisma/client';
+import type { Prisma, WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomBytes, randomUUID } from 'crypto';
 import type { SignOptions } from 'jsonwebtoken';
@@ -96,15 +96,13 @@ export class TokensService {
     };
   }
 
-  /** Issue a fresh access+refresh pair and persist the refresh-token hash. */
-  async issueTokens(user: WawuUser): Promise<TokenPair> {
-    // A mobile sign-up whose phone code was never entered holds no session,
-    // whichever route asks for one (sign-in, email confirmation, the phone
-    // OTP, a reset, a refresh). Every token this service mints comes through
-    // here, so this is the one place that has to know. Accounts without a
-    // pending sign-up (all web and legacy rows) are not touched.
+  /** A sign-up whose phone code was never entered holds no session (403). */
+  private async refuseIfPhonePending(
+    user: WawuUser,
+    db: Prisma.TransactionClient | PrismaService,
+  ): Promise<void> {
     if (!user.phoneVerifiedAt) {
-      const pending = await this.prisma.phoneVerification.findUnique({
+      const pending = await db.phoneVerification.findUnique({
         where: { userId: user.id },
         select: { id: true },
       });
@@ -116,6 +114,19 @@ export class TokensService {
         });
       }
     }
+  }
+
+  /** Issue a fresh access+refresh pair and persist the refresh-token hash. */
+  async issueTokens(
+    user: WawuUser,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<TokenPair> {
+    // A mobile sign-up whose phone code was never entered holds no session,
+    // whichever route asks for one (sign-in, email confirmation, the phone
+    // OTP, a reset, a refresh). Every token this service mints comes through
+    // here, so this is the one place that has to know. Accounts without a
+    // pending sign-up (all web and legacy rows) are not touched.
+    await this.refuseIfPhonePending(user, db);
 
     // `issuer` lets every resource server confirm a token came from THIS
     // identity service rather than merely being signed by some key in the
@@ -141,7 +152,7 @@ export class TokensService {
     );
 
     const decoded = this.jwt.decode(refreshToken) as { exp: number };
-    await this.prisma.refreshToken.create({
+    await db.refreshToken.create({
       data: {
         userId: user.id,
         tokenHash: await argon2.hash(refreshToken),
@@ -196,6 +207,51 @@ export class TokensService {
   }
 
   /**
+   * Take the account's row lock. Rotating a refresh token, changing the
+   * password and signing out all hold it while they touch the account's
+   * refresh tokens, so they run one after another: a rotation cannot insert a
+   * new token after a revocation has swept the old ones.
+   */
+  async lockAccount(
+    tx: Prisma.TransactionClient,
+    userId: string,
+  ): Promise<void> {
+    await tx.$queryRaw`SELECT id FROM wawu_users WHERE id = ${userId}::uuid FOR UPDATE`;
+  }
+
+  /**
+   * Sign out one device: delete the stored record of the presented refresh
+   * token. An expired token is still taken out (it was signed by this service
+   * and is only being cleaned up); a forged, wrong-type or unknown one does
+   * nothing. Never throws for a bad token and never says which case it was.
+   */
+  async revokeRefreshToken(presented: string): Promise<void> {
+    let payload: { sub?: unknown; type?: unknown };
+    try {
+      payload = await this.jwt.verifyAsync(presented, {
+        algorithms: ['RS256'],
+        ignoreExpiration: true,
+      });
+    } catch {
+      return;
+    }
+    if (payload.type !== 'refresh' || typeof payload.sub !== 'string') return;
+
+    const records = await this.prisma.refreshToken
+      .findMany({ where: { userId: payload.sub } })
+      .catch(() => []);
+    for (const record of records) {
+      if (await argon2.verify(record.tokenHash, presented)) {
+        await this.prisma.$transaction(async (tx) => {
+          await this.lockAccount(tx, payload.sub as string);
+          await tx.refreshToken.deleteMany({ where: { id: record.id } });
+        });
+        return;
+      }
+    }
+  }
+
+  /**
    * Validate a presented refresh token, delete the stored record (single-use
    * rotation), and issue a new pair from the user's current state.
    */
@@ -225,20 +281,31 @@ export class TokensService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    // Single-use: remove the old token before issuing a replacement.
-    await this.prisma.refreshToken.delete({ where: { id: matched.id } });
-
-    if (matched.expiresAt.getTime() <= Date.now()) {
-      throw new UnauthorizedException('Invalid refresh token');
-    }
-
-    const user = await this.prisma.wawuUser.findUnique({
-      where: { id: payload.sub },
+    // Single-use, and exclusive with a revocation: under the account's lock
+    // the token must still exist, is removed, and its replacement is stored
+    // before the lock is let go. A password change or sign-out that ran first
+    // has already deleted it, so the rotation is refused; one that runs after
+    // finds the replacement and sweeps it too.
+    const userId = payload.sub;
+    const known = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
     });
-    if (!user) {
+    if (!known) throw new UnauthorizedException('Invalid refresh token');
+    await this.refuseIfPhonePending(known, this.prisma);
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await this.lockAccount(tx, userId);
+      const removed = await tx.refreshToken.deleteMany({
+        where: { id: matched.id },
+      });
+      if (removed.count !== 1) return 'refused' as const;
+      if (matched.expiresAt.getTime() <= Date.now()) return 'expired' as const;
+      const user = await tx.wawuUser.findUnique({ where: { id: userId } });
+      if (!user) return 'refused' as const;
+      return this.issueTokens(user, tx);
+    });
+    if (typeof outcome === 'string') {
       throw new UnauthorizedException('Invalid refresh token');
     }
-
-    return this.issueTokens(user);
+    return outcome;
   }
 }

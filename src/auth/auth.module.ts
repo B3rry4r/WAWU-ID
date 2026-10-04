@@ -12,6 +12,7 @@ import { InternalController } from './internal.controller';
 import { PhoneSignupService } from './phone-signup.service';
 import { DbRateLimiter, RateLimiter } from './rate-limiter.service';
 import { SessionReader } from './session-reader';
+import { SessionSecurityService } from './session-security.service';
 import { SignupSequenceController } from './signup-sequence.controller';
 import { SignupSequenceService } from './signup-sequence.service';
 import { TokensService } from './tokens.service';
@@ -40,6 +41,7 @@ import { TokensService } from './tokens.service';
     PhoneSignupService,
     SignupSequenceService,
     SessionReader,
+    SessionSecurityService,
     { provide: RateLimiter, useClass: DbRateLimiter },
   ],
   exports: [TokensService],
