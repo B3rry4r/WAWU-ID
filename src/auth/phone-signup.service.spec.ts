@@ -1,6 +1,11 @@
 import { HttpException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { MemoryRateLimiter } from '../testing/memory-rate-limiter';
+import {
+  fakePrisma,
+  type Row,
+  type UserRow,
+} from '../testing/fake-signup-prisma';
 import { RecordingSmsProvider } from '../testing/recording-sms.provider';
 import { AuthService } from './auth.service';
 import {
@@ -26,171 +31,6 @@ const DATE_ONLY = [
   'setTimeout',
   'clearTimeout',
 ] as const;
-
-type Row = Record<string, unknown>;
-
-interface CodeRow extends Row {
-  id: string;
-  userId: string;
-  phone: string;
-  codeHash: string;
-  attemptHash: string;
-  claimEmail: string | null;
-  emailCodeHash: string | null;
-  expiresAt: Date;
-  lastSentAt: Date;
-  signupExpiresAt: Date;
-}
-
-interface UserRow extends Row {
-  id: string;
-  email: string | null;
-  phone: string;
-  emailVerified: boolean;
-  phoneVerifiedAt: Date | null;
-  passwordHash: string | null;
-  occupation: string | null;
-  accountType: string | null;
-  phoneVerification: CodeRow | null;
-}
-
-type Where = Record<string, unknown>;
-
-/** A Prisma `where` over plain rows: equality, `in`, `not` and `OR`. */
-function matches(row: Row, where: Where): boolean {
-  return Object.entries(where).every(([key, want]) => {
-    if (key === 'OR') return (want as Where[]).some((w) => matches(row, w));
-    const have = row[key];
-    if (want && typeof want === 'object' && 'in' in want) {
-      return (want.in as unknown[]).includes(have);
-    }
-    if (want && typeof want === 'object' && 'not' in want) {
-      return have !== want.not;
-    }
-    return have === want;
-  });
-}
-
-/** The few Prisma calls the service makes, over one array of users. */
-function fakePrisma() {
-  const users: UserRow[] = [];
-  let seq = 0;
-  const codes = () =>
-    users.flatMap((u) => (u.phoneVerification ? [u.phoneVerification] : []));
-
-  const api = {
-    users,
-    codes,
-    wawuUser: {
-      findMany: ({ where }: { where: Where }) =>
-        Promise.resolve(users.filter((u) => matches(u, where))),
-      create: ({ data }: { data: Row }) => {
-        const { phoneVerification, ...rest } = data as {
-          phoneVerification?: { create: Partial<CodeRow> };
-        } & Row;
-        const taken = users.some(
-          (u) =>
-            (rest.email && u.email === rest.email) || u.phone === rest.phone,
-        );
-        if (taken) {
-          return Promise.reject(
-            Object.assign(new Error('Unique constraint failed'), {
-              code: 'P2002',
-            }),
-          );
-        }
-        const id = `u${++seq}`;
-        const row = {
-          id,
-          emailVerified: false,
-          phoneVerifiedAt: null,
-          ...rest,
-          phoneVerification: phoneVerification
-            ? ({
-                id: `c${++seq}`,
-                userId: id,
-                ...phoneVerification.create,
-              } as CodeRow)
-            : null,
-        } as UserRow;
-        users.push(row);
-        return Promise.resolve(row);
-      },
-      update: ({
-        where,
-        data,
-      }: {
-        where: { id: string };
-        data: Partial<UserRow>;
-      }) => {
-        const row = users.find((u) => u.id === where.id) as UserRow;
-        if (
-          data.email &&
-          users.some((u) => u.id !== row.id && u.email === data.email)
-        ) {
-          return Promise.reject(
-            Object.assign(new Error('Unique constraint failed'), {
-              code: 'P2002',
-            }),
-          );
-        }
-        Object.assign(row, data);
-        return Promise.resolve(row);
-      },
-      updateMany: ({
-        where,
-        data,
-      }: {
-        where: Where;
-        data: Partial<UserRow>;
-      }) => {
-        const hit = users.filter(
-          (u) =>
-            matches(u, where) &&
-            u.id !== (where.id as { not: string } | undefined)?.not,
-        );
-        hit.forEach((u) => Object.assign(u, data));
-        return Promise.resolve({ count: hit.length });
-      },
-      deleteMany: ({ where }: { where: { id: string } }) => {
-        const at = users.findIndex((u) => u.id === where.id);
-        if (at >= 0) users.splice(at, 1);
-        return Promise.resolve({ count: at >= 0 ? 1 : 0 });
-      },
-    },
-    phoneVerification: {
-      findUnique: ({ where }: { where: { attemptHash: string } }) => {
-        const owner = users.find(
-          (u) => u.phoneVerification?.attemptHash === where.attemptHash,
-        );
-        return Promise.resolve(
-          owner?.phoneVerification
-            ? { ...owner.phoneVerification, user: owner }
-            : null,
-        );
-      },
-      update: ({
-        where,
-        data,
-      }: {
-        where: { id: string };
-        data: Partial<CodeRow>;
-      }) => {
-        const row = codes().find((c) => c.id === where.id) as CodeRow;
-        Object.assign(row, data);
-        return Promise.resolve(row);
-      },
-      deleteMany: ({ where }: { where: { id: string } }) => {
-        const owner = users.find((u) => u.phoneVerification?.id === where.id);
-        if (!owner) return Promise.resolve({ count: 0 });
-        owner.phoneVerification = null;
-        return Promise.resolve({ count: 1 });
-      },
-    },
-    $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(api),
-  };
-  return api;
-}
 
 describe('PhoneSignupService', () => {
   let prisma: ReturnType<typeof fakePrisma>;

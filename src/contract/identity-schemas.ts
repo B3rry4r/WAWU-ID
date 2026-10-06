@@ -143,18 +143,41 @@ export class PhoneCodeSentAnswer {
   data!: PhoneCodeSentSchema;
 }
 
+export class EmailSignupCodeSentSchema extends PhoneCodeSentSchema {
+  @ApiProperty({ enum: ['email'] })
+  channel!: 'email';
+}
+
+export class EmailSignupCodeSentAnswer {
+  @ApiProperty({ type: EmailSignupCodeSentSchema })
+  data!: EmailSignupCodeSentSchema;
+}
+
 export class SignupStartedSchema extends PhoneCodeSentSchema {
   @ApiProperty({
     description:
-      'Shown once. Keep it with the sign-up (it survives the app closing) and send it on every phone/verify and resume call.',
+      'Shown once. Keep it with the sign-up (it survives the app closing) and send it on every code and resume call.',
   })
   attempt!: string;
 
   @ApiProperty({
     description:
-      'The confirm call must also carry `emailCode`, the code mailed to the email.',
+      'Texted sign-up only: the confirm call must also carry `emailCode`, the code mailed to the email. Always false when the code was mailed.',
   })
   emailCodeRequired!: boolean;
+
+  @ApiPropertyOptional({
+    enum: ['email'],
+    description:
+      '`email`: the code was mailed (the default, DECISIONS R-39): send it to `signup/email-code/*`. Absent: the code was texted (`SIGNUP_VERIFY_CHANNEL=sms`): `phone/verify/*`.',
+  })
+  channel?: 'email';
+
+  @ApiPropertyOptional({
+    description:
+      'With `channel: email`: where the code went, written a•••@example.com. Show it on A4.',
+  })
+  maskedEmail?: string;
 }
 
 export class SignupStartedAnswer {
@@ -195,6 +218,19 @@ export class SignupResumeSchema {
     description: 'With `phone`: the account type sent with the sign-up.',
   })
   accountType?: 'user' | 'creator' | null;
+
+  @ApiPropertyOptional({
+    enum: ['email'],
+    description:
+      'With `phone`: `email` when the code was mailed (use `signup/email-code/*`); absent when it was texted. The step is named `phone` whichever way the code travels.',
+  })
+  channel?: 'email';
+
+  @ApiPropertyOptional({
+    description:
+      'With `channel: email`: where the code went, written a•••@example.com.',
+  })
+  maskedEmail?: string;
 }
 
 export class SignupResumeAnswer {
@@ -273,6 +309,10 @@ export const ERROR_CODES = [
   'EMAIL_CODE_INVALID',
   'EMAIL_CODE_LOCKED',
   'EMAIL_CODE_RESEND_TOO_SOON',
+  'EMAIL_ALREADY_CONFIRMED',
+  'EMAIL_NOT_CONFIGURED',
+  'EMAIL_SEND_FAILED',
+  'SIGNUP_CHANNEL_DISABLED',
   'CURRENT_PASSWORD_WRONG',
   'PASSWORD_UNCHANGED',
   'PASSWORD_NOT_SET',

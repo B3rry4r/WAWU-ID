@@ -17,16 +17,20 @@ import {
 import type { Request } from 'express';
 import {
   EmailCodeSentAnswer,
+  EmailSignupCodeSentAnswer,
   ErrorBody,
+  SessionAnswer,
   SignupProgressAnswer,
   SignupResumeAnswer,
 } from '../contract/identity-schemas';
 import { clientAddress } from './client-address';
+import { SignupEmailCodeConfirmDto } from './dto/signup-email-code-confirm.dto';
+import { SignupEmailCodeStartDto } from './dto/signup-email-code-start.dto';
 import { SignupEmailConfirmDto } from './dto/signup-email-confirm.dto';
 import { SignupProgressDto } from './dto/signup-progress.dto';
 import { SignupResumeDto } from './dto/signup-resume.dto';
-import { PhoneSignupService } from './phone-signup.service';
 import { SessionReader } from './session-reader';
+import { SignupChannelService } from './signup-channel.service';
 import { SignupSequenceService } from './signup-sequence.service';
 
 /**
@@ -39,7 +43,7 @@ import { SignupSequenceService } from './signup-sequence.service';
 @Controller('auth/signup')
 export class SignupSequenceController {
   constructor(
-    private readonly phoneSignup: PhoneSignupService,
+    private readonly signupChannel: SignupChannelService,
     private readonly sequence: SignupSequenceService,
     private readonly session: SessionReader,
   ) {}
@@ -49,7 +53,7 @@ export class SignupSequenceController {
   @ApiOperation({
     operationId: 'signupResume',
     summary:
-      'Where a sign-up stands before its phone code, for an app that was closed between A3 and A4. Sends nothing.',
+      'Where a sign-up stands before its code (mailed by default, texted with SIGNUP_VERIFY_CHANNEL=sms), for an app that was closed between A3 and A4. Sends nothing. A sign-up whose code went by the other channel answers `details`.',
   })
   @ApiBody({ type: SignupResumeDto })
   @ApiResponse({ status: 200, type: SignupResumeAnswer })
@@ -57,9 +61,91 @@ export class SignupSequenceController {
   @ApiResponse({ status: 429, type: ErrorBody, description: 'RATE_LIMITED.' })
   async resume(@Body() dto: SignupResumeDto, @Req() req: Request) {
     return {
-      data: await this.phoneSignup.resume(
+      data: await this.signupChannel.resume(
         dto.phone,
         dto.attempt,
+        clientAddress(req),
+      ),
+    };
+  }
+
+  @Post('email-code/start')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'signupEmailCodeStart',
+    summary:
+      'A4 (mailed sign-up, the default): mail another code. The same answer for any number and secret; only a live sign-up is mailed. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are texted.',
+  })
+  @ApiBody({ type: SignupEmailCodeStartDto })
+  @ApiResponse({ status: 200, type: EmailSignupCodeSentAnswer })
+  @ApiResponse({
+    status: 400,
+    type: ErrorBody,
+    description: 'Validation, PHONE_INVALID, PHONE_NOT_SUPPORTED.',
+  })
+  @ApiResponse({
+    status: 409,
+    type: ErrorBody,
+    description: 'SIGNUP_CHANNEL_DISABLED.',
+  })
+  @ApiResponse({
+    status: 429,
+    type: ErrorBody,
+    description: 'EMAIL_CODE_RESEND_TOO_SOON, RATE_LIMITED.',
+  })
+  @ApiResponse({
+    status: 503,
+    type: ErrorBody,
+    description: 'EMAIL_NOT_CONFIGURED.',
+  })
+  async emailCodeStart(
+    @Body() dto: SignupEmailCodeStartDto,
+    @Req() req: Request,
+  ) {
+    return {
+      data: await this.signupChannel.emailCodeStart(
+        dto.phone,
+        dto.attempt,
+        clientAddress(req),
+      ),
+    };
+  }
+
+  @Post('email-code/confirm')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'signupEmailCodeConfirm',
+    summary:
+      'A4 (mailed sign-up, the default): check the mailed code. Right: the email is proven and the first session is issued. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are texted.',
+  })
+  @ApiBody({ type: SignupEmailCodeConfirmDto })
+  @ApiResponse({ status: 200, type: SessionAnswer })
+  @ApiResponse({
+    status: 400,
+    type: ErrorBody,
+    description:
+      'Validation, EMAIL_CODE_INVALID (also for a secret that is not live: restart sign-up after the fourth 400 in a row).',
+  })
+  @ApiResponse({
+    status: 409,
+    type: ErrorBody,
+    description:
+      'EMAIL_ALREADY_CONFIRMED, SIGNUP_CHANNEL_DISABLED, or the email or phone was taken meanwhile.',
+  })
+  @ApiResponse({
+    status: 429,
+    type: ErrorBody,
+    description: 'EMAIL_CODE_LOCKED, RATE_LIMITED.',
+  })
+  async emailCodeConfirm(
+    @Body() dto: SignupEmailCodeConfirmDto,
+    @Req() req: Request,
+  ) {
+    return {
+      data: await this.signupChannel.emailCodeConfirm(
+        dto.phone,
+        dto.attempt,
+        dto.code,
         clientAddress(req),
       ),
     };

@@ -241,6 +241,12 @@ model PhoneVerification {
   // A sign-up that has not proven its phone by this time can no longer be
   // confirmed, and any new sign-up may take its email and phone.
   signupExpiresAt DateTime @map("signup_expires_at")
+  // Where the code on this row was sent (AUTH-07): 'email' (the code is mailed
+  // to the account's email; confirming it proves the email, not the phone) or
+  // NULL, which is every row made before this column and every row made while
+  // SIGNUP_VERIFY_CHANNEL is `sms` (the code was texted to `phone`). A route
+  // only acts on rows of its own channel.
+  channel         String?  @map("channel")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 

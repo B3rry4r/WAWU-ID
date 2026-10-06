@@ -147,13 +147,18 @@ export class AuthService {
    */
   private refuseIfPending(user: {
     phoneVerifiedAt: Date | null;
-    phoneVerification?: unknown;
+    phoneVerification?: { channel?: string | null } | null;
   }): void {
     if (!user.phoneVerifiedAt && user.phoneVerification) {
       throw new ForbiddenException({
         statusCode: 403,
         code: 'PHONE_NOT_CONFIRMED',
-        message: 'Confirm your phone number to finish signing up.',
+        // The code is the same either way (the contract names it); the
+        // sentence says where the code went (AUTH-07).
+        message:
+          user.phoneVerification.channel === 'email'
+            ? 'Enter the code we emailed you to finish signing up.'
+            : 'Confirm your phone number to finish signing up.',
       });
     }
   }
@@ -256,7 +261,15 @@ export class AuthService {
       const normalised = normalisePhone(dto.identifier);
       if (normalised) {
         user = await this.prisma.wawuUser.findFirst({
-          where: { phone: normalised, phoneVerifiedAt: { not: null } },
+          where: {
+            phone: normalised,
+            // A phone-verified account, or one that proved its email at a
+            // mailed sign-up (AUTH-07; it is in the sign-up sequence).
+            OR: [
+              { phoneVerifiedAt: { not: null } },
+              { signupProgress: { isNot: null } },
+            ],
+          },
           include: { phoneVerification: true },
         });
       }

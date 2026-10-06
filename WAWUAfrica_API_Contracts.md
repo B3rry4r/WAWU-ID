@@ -69,6 +69,84 @@ Response 201:
 }
 ```
 
+### How a mobile sign-up is verified: `SIGNUP_VERIFY_CHANNEL` (AUTH-07)
+One setting decides what the code at A4 proves and how it travels (mobile repo
+DECISIONS.md R-39; owner, 6 Oct 2026: Fintava, and with it SMS, is being removed):
+
+| `SIGNUP_VERIFY_CHANNEL` | the 6-digit code is | it proves | routes that work |
+|---|---|---|---|
+| `email` (default) | **mailed** to the email typed at sign-up, through the same mailer as every other mail | the EMAIL (`email_verified`); the phone is stored, not proven (`phone_verified_at` stays empty) | `POST /auth/signup`, `/auth/signup/email-code/start`, `/auth/signup/email-code/confirm`, `/auth/signup/resume` |
+| `sms` | texted to the phone through the SmsProvider (Fintava) | the phone, exactly as AUTH-03 built it | `POST /auth/signup`, `/auth/phone/verify/start`, `/auth/phone/verify/confirm`, `/auth/signup/resume` |
+
+- Anything other than a literal `sms` (any case, trimmed) is `email`: a typo never starts
+  spending on texts. The value is read at start; change it and restart to switch.
+- A route of the channel that is not active answers **409 `SIGNUP_CHANNEL_DISABLED`**
+  (`{ statusCode, code, message }`), before it checks anything or spends anything. No route
+  is removed, the SMS provider and the phone-code routes stay, so setting `sms` restores the
+  old behaviour byte for byte (the `sms` answers carry no new field).
+- A sign-up started under one channel is answered `step: 'details'` by `resume` once the
+  other is active (its code went the other way): the person starts again at A3. Nothing is
+  lost: a new sign-up replaces the unproven one.
+- The limits are the phone code's, from the same config, counted on the email where the
+  phone code counted the number (below). The wrong-code rules and the 60 s resend gap are
+  the same. A mailed code lives 600 s (`SIGNUP_EMAIL_CODE_TTL_SECONDS`), because the mail
+  says "expires in 10 minutes".
+- A mailed sign-up that is confirmed is in the sign-up sequence (its `signup_progress` row
+  is made at confirm) and its `email` step is already done, so the next step is A11 or A12.
+- No code is ever logged by these routes. Mail is handed over strictly: no transport
+  (`RESEND_API_KEY` unset) answers 503 `EMAIL_NOT_CONFIGURED` and an error from Resend
+  answers 503 `EMAIL_SEND_FAILED`, with no account written for the first and the mail given
+  back for the second.
+
+#### POST /auth/signup with `channel: email` (the default)
+```json
+Response 201:
+{ "data": { "phone": "+2348031234412", "expiresIn": 600, "resendIn": 60,
+            "attempt": "Xk3...43 chars, unguessable, keep it",
+            "emailCodeRequired": false,
+            "channel": "email", "maskedEmail": "a•••@example.com" } }
+
+Error 400 PHONE_INVALID / PHONE_NOT_SUPPORTED   as below (the number is still Nigerian only, R-36)
+Error 409                      as below
+Error 429 RATE_LIMITED / EMAIL_CODE_RESEND_TOO_SOON   with retryAfterSeconds
+Error 503 EMAIL_NOT_CONFIGURED / EMAIL_SEND_FAILED
+```
+An email held by a **phone-proven** mobile account that never proved it is still never
+taken from it, but there is no second code: the one mailed code is the proof, and the
+email moves to the new account when it is entered (`emailCodeRequired` stays false).
+
+#### POST /auth/signup/email-code/start (mail another code)
+For the holder of a sign-up's `attempt`. Any other call gets the same answer, mails nothing.
+```json
+Request:  { "phone": "+2348031234412", "attempt": "Xk3..." }
+Response 200: { "data": { "phone": "+2348031234412", "expiresIn": 600, "resendIn": 60, "channel": "email" } }
+Error 409 SIGNUP_CHANNEL_DISABLED
+Error 429 EMAIL_CODE_RESEND_TOO_SOON / RATE_LIMITED
+Error 503 EMAIL_NOT_CONFIGURED
+```
+
+#### POST /auth/signup/email-code/confirm
+Gives a session only to the account that sign-up created.
+```json
+Request:  { "phone": "08031234412", "attempt": "Xk3...", "code": "481902" }
+Response 200: { "data": { "accessToken": "eyJ...", "refreshToken": "eyJ...", "user": {...} } }
+
+Error 400 EMAIL_CODE_INVALID   wrong code, expired, a wrong or replaced attempt, nothing
+                               pending for that number (the same answer for all of them)
+Error 409 EMAIL_ALREADY_CONFIRMED / SIGNUP_CHANNEL_DISABLED
+Error 429 EMAIL_CODE_LOCKED (4 wrong in a row, then 900 s) / RATE_LIMITED
+```
+After it the account has `email_verified = true`, `phone_verified_at = NULL`, and signs in
+by email, or by phone typed either way (the local-form lookup also finds an account in the
+sign-up sequence).
+
+#### POST /auth/signup/resume, with `channel: email`
+`{ step: 'phone', phone, expiresIn, resendIn, emailCodeRequired: false, accountType,
+channel: 'email', maskedEmail }` (the step is still named `phone`: it is the code step,
+whichever way the code travels).
+
+The text below describes `SIGNUP_VERIFY_CHANNEL=sms`.
+
 ### POST /auth/signup (mobile sign-up, phone code)
 Creates the account and texts a 6-digit code to the phone. **Issues no session**:
 the session comes from `/auth/phone/verify/confirm`. The phone may be written
