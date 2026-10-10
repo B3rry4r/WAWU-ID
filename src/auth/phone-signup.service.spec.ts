@@ -333,8 +333,26 @@ describe('PhoneSignupService', () => {
 
     expect(out.accessToken).toBe('a');
     expect(prisma.users[0].phoneVerifiedAt).toBeInstanceOf(Date);
+    // Round 2, D1: the number the code went to is recorded, so the token
+    // vouches for it only while the account still holds it.
+    expect(
+      (prisma.users[0] as unknown as { phoneVerifiedFor: string })
+        .phoneVerifiedFor,
+    ).toBe(PHONE);
     expect(prisma.users[0].phoneVerification).toBeNull();
     expect(sessionFor).toHaveBeenCalledTimes(1);
+  });
+
+  it('records the number the code went to, not whatever the account holds by then', async () => {
+    const { attempt, code } = await begin();
+    // The internal phone-change route moved the account to another number
+    // while the code was waiting; the code was texted to PHONE.
+    prisma.users[0].phone = '2348090000000';
+    await confirm(attempt, code);
+    expect(
+      (prisma.users[0] as unknown as { phoneVerifiedFor: string })
+        .phoneVerifiedFor,
+    ).toBe(PHONE);
   });
 
   it('refuses a phone that is not a phone, without creating anything', async () => {

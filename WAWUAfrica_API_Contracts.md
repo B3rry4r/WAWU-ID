@@ -428,12 +428,25 @@ deploy.
 The access token also carries two booleans that say which contact WAWU ID has
 PROVEN (JOIN-03): `emailVerified` is true only when the account has an email and
 `email_verified` is set, and `phoneVerified` is true only when `phone_verified_at`
-is set. The `email` and `phone` claims are always present, proven or not (a web
-sign-up types both), so a resource server that must know a contact is the
-person's reads these two and never trusts a typed address. A released phone
-(`released:<id>`, `phone_verified_at` empty) is `phoneVerified: false` and its
-`phone` claim is an empty string. Both are additive claims and a snapshot, like
-`verification`: the token lives 15 minutes.
+is set AND the number it was set for (`phone_verified_for`, the number the
+sign-up code was texted to) is still the account's `phone`, however the two are
+spelled (`0803...`, `234803...` and `+234803...` are one number). The `email`
+and `phone` claims are always present, proven or not (a web sign-up types
+both), so a resource server that must know a contact is the person's reads
+these two and never trusts a typed address. A released phone (`released:<id>`,
+`phone_verified_at` empty) is `phoneVerified: false` and its `phone` claim is an
+empty string.
+
+A phone written afterwards by the internal phone-change routes (`PATCH
+/internal/users/:wawuId/phone`, or the request and confirm pair whose code goes
+to the account's EMAIL) is not proven by them: they prove the mailbox, not the
+number, and leave `phone_verified_at` set, so signing in by phone still works
+as before. From then the token says `phoneVerified: false` for that number
+until a sign-up code proves it. Accounts that changed their phone through those
+routes BEFORE `phone_verified_for` existed were backfilled with the number they
+hold (the routes left no trace), so only changes after the migration are
+caught. Both are additive claims and a snapshot, like `verification`: the token
+lives 15 minutes.
 
 ### INTERNAL — PATCH /internal/users/:wawuId/trust-score
 Header: `X-Service-Key: <secret>`

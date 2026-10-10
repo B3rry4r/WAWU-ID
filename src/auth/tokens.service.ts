@@ -12,6 +12,7 @@ import { randomBytes, randomUUID } from 'crypto';
 import type { SignOptions } from 'jsonwebtoken';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwksService } from '../jwks/jwks.service';
+import { phoneIsProven } from './phone-proof';
 import { phoneForClients } from './released-phone';
 import {
   deriveVerification,
@@ -63,6 +64,10 @@ export interface AccessTokenPayload {
    * mailed code since AUTH-07). A resource server that must know a contact is
    * the person's (the Hub's event-registration claim, JOIN-03) reads these two
    * and never trusts a typed address. A SNAPSHOT, like `verification`.
+   * `phoneVerified` is true only while the number the sign-up code went to is
+   * still the account's `phone` (`phone_verified_for`, JOIN-03 round 2): the
+   * internal phone-change routes write a new number without proving it, and
+   * that number is not vouched for.
    */
   emailVerified: boolean;
   phoneVerified: boolean;
@@ -107,7 +112,7 @@ export class TokensService {
       trustScore: user.trustScore,
       verification: deriveVerification(user),
       emailVerified: user.email !== null && user.emailVerified,
-      phoneVerified: user.phoneVerifiedAt !== null,
+      phoneVerified: phoneIsProven(user),
       status: user.status,
       platformRefs: {
         wawuafricaAppUserId: user.wawuafricaAppUserId,
