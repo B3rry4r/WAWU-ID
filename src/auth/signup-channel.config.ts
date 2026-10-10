@@ -12,8 +12,10 @@ import { ConfigService } from '@nestjs/config';
  *    the code proves the email; the phone is stored but not proven.
  *
  * Set `SIGNUP_VERIFY_CHANNEL` and restart to switch. Switch to `email` only
- * after the app build with email codes is in testers' hands and Resend (the key
- * and a verified sending domain) is confirmed in production, because an older
+ * after the app build with email codes is in testers' hands, Resend (the key
+ * and a verified sending domain) is confirmed in production, and a way to add
+ * and prove a phone later exists (BACKEND_GAPS G-222: a mailed sign-up for a
+ * number another account has typed is made without a number), because an older
  * app build and a sign-up already waiting on a text are refused (409
  * SIGNUP_CHANNEL_DISABLED) the moment the value is `email`. Changing it back to
  * `phone` restores the old behaviour: nothing is removed.
