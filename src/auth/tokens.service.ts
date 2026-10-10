@@ -1,11 +1,12 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import type { Prisma, WawuUser } from '@prisma/client';
+import type { Prisma, RefreshToken, WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomBytes, randomUUID } from 'crypto';
 import type { SignOptions } from 'jsonwebtoken';
@@ -21,6 +22,13 @@ type ExpiresIn = NonNullable<SignOptions['expiresIn']>;
 
 /** Activation links are valid for 72 hours (mirrors password-reset handling). */
 const ACTIVATION_TOKEN_TTL_MS = 72 * 60 * 60 * 1000;
+
+/**
+ * Expired refresh-token records of one account removed per issue or sign-out.
+ * A bounded number of single-row deletes, so a sign-in never waits on an
+ * account with a long backlog; the next one takes the next batch.
+ */
+export const EXPIRED_SWEEP_BATCH = 50;
 
 /** Access-token payload — authoritative shape from Brief Section 2. */
 export interface AccessTokenPayload {
@@ -64,6 +72,8 @@ export interface TokenPair {
 
 @Injectable()
 export class TokensService {
+  private readonly logger = new Logger(TokensService.name);
+
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
@@ -144,8 +154,13 @@ export class TokensService {
       ...(issuer ? { issuer } : {}),
     });
 
+    // The jti is the record's lookup key: it is signed into the token and
+    // stored on the row, so a refresh or a sign-out finds the one row and
+    // verifies the hash once, instead of hash-checking every row the account
+    // holds.
+    const jti = randomUUID();
     const refreshToken = await this.jwt.signAsync(
-      { sub: user.id, jti: randomUUID(), type: 'refresh' },
+      { sub: user.id, jti, type: 'refresh' },
       {
         algorithm: 'RS256',
         expiresIn: this.config.getOrThrow<string>(
@@ -155,9 +170,11 @@ export class TokensService {
     );
 
     const decoded = this.jwt.decode(refreshToken) as { exp: number };
+    await this.deleteExpiredRefreshTokens(user.id, db);
     await db.refreshToken.create({
       data: {
         userId: user.id,
+        jti,
         tokenHash: await argon2.hash(refreshToken),
         expiresAt: new Date(decoded.exp * 1000),
       },
@@ -223,13 +240,90 @@ export class TokensService {
   }
 
   /**
+   * Housekeeping: delete the account's expired refresh-token records, at most
+   * EXPIRED_SWEEP_BATCH of them. Nothing else removes an expired row (a token
+   * nobody presents again leaves one behind), and the old scan paid argon2 for
+   * each. Runs on every issue and every sign-out, so the rows of an account
+   * that is in use never pile up. Best effort: it never fails the sign-in or
+   * sign-out it rides on, and inside a transaction a failure here fails the
+   * statement after it anyway.
+   */
+  private async deleteExpiredRefreshTokens(
+    userId: string,
+    db: Prisma.TransactionClient | PrismaService,
+  ): Promise<void> {
+    try {
+      const now = Date.now();
+      const stale = await db.refreshToken.findMany({
+        where: { userId, expiresAt: { lte: new Date(now) } },
+        select: { id: true, expiresAt: true },
+        take: EXPIRED_SWEEP_BATCH,
+      });
+      for (const row of stale) {
+        // The query already says so; the check keeps a live token safe from
+        // a mistake in it.
+        if (row.expiresAt.getTime() > now) continue;
+        await db.refreshToken.deleteMany({ where: { id: row.id } });
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Could not prune expired refresh tokens: ${String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * The stored record of a presented refresh token, or undefined.
+   *
+   * A token minted by this code carries a jti that its row also carries: the
+   * one row is looked up by (account, jti) and its hash is verified once. A
+   * row that is missing (rotated, signed out, swept, never existed) or whose
+   * hash does not verify refuses the token, the same answer as an unknown one.
+   *
+   * A token minted before the jti was stored has a row with a null jti; its
+   * payload may or may not name a jti, but no row holds it. When no row holds
+   * the token's jti, the old scan runs over the account's null-jti rows that
+   * have not expired, until those tokens expire (30 days at most). No row that
+   * carries a jti is ever hash-checked on that path.
+   */
+  private async findRefreshRecord(
+    userId: string,
+    jti: unknown,
+    presented: string,
+  ): Promise<RefreshToken | undefined> {
+    if (typeof jti === 'string' && jti.length > 0) {
+      const rows = await this.prisma.refreshToken.findMany({
+        where: { userId, jti },
+        take: 1,
+      });
+      // Belt and braces: the row must be this account's and carry this jti.
+      const row = rows.find((r) => r.userId === userId && r.jti === jti);
+      if (row) {
+        return (await argon2.verify(row.tokenHash, presented))
+          ? row
+          : undefined;
+      }
+    }
+
+    const now = Date.now();
+    const legacy = await this.prisma.refreshToken.findMany({
+      where: { userId, jti: null, expiresAt: { gt: new Date(now) } },
+    });
+    for (const record of legacy) {
+      if (record.jti != null || record.expiresAt.getTime() <= now) continue;
+      if (await argon2.verify(record.tokenHash, presented)) return record;
+    }
+    return undefined;
+  }
+
+  /**
    * Sign out one device: delete the stored record of the presented refresh
    * token. An expired token is still taken out (it was signed by this service
    * and is only being cleaned up); a forged, wrong-type or unknown one does
    * nothing. Never throws for a bad token and never says which case it was.
    */
   async revokeRefreshToken(presented: string): Promise<void> {
-    let payload: { sub?: unknown; type?: unknown };
+    let payload: { sub?: unknown; type?: unknown; jti?: unknown };
     try {
       payload = await this.jwt.verifyAsync(presented, {
         algorithms: ['RS256'],
@@ -239,19 +333,22 @@ export class TokensService {
       return;
     }
     if (payload.type !== 'refresh' || typeof payload.sub !== 'string') return;
+    const userId = payload.sub;
 
-    const records = await this.prisma.refreshToken
-      .findMany({ where: { userId: payload.sub } })
-      .catch(() => []);
-    for (const record of records) {
-      if (await argon2.verify(record.tokenHash, presented)) {
-        await this.prisma.$transaction(async (tx) => {
-          await this.lockAccount(tx, payload.sub as string);
-          await tx.refreshToken.deleteMany({ where: { id: record.id } });
-        });
-        return;
-      }
-    }
+    // Expired rows go first: an expired token presented here is cleaned up by
+    // the sweep (the lookup below ignores expired old-style rows).
+    await this.deleteExpiredRefreshTokens(userId, this.prisma);
+
+    const record = await this.findRefreshRecord(
+      userId,
+      payload.jti,
+      presented,
+    ).catch(() => undefined);
+    if (!record) return;
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockAccount(tx, userId);
+      await tx.refreshToken.deleteMany({ where: { id: record.id } });
+    });
   }
 
   /**
@@ -259,7 +356,7 @@ export class TokensService {
    * rotation), and issue a new pair from the user's current state.
    */
   async rotateRefreshToken(presented: string): Promise<TokenPair> {
-    let payload: { sub: string; type?: string };
+    let payload: { sub: string; type?: string; jti?: unknown };
     try {
       payload = await this.jwt.verifyAsync(presented, { algorithms: ['RS256'] });
     } catch {
@@ -269,17 +366,11 @@ export class TokensService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    const records = await this.prisma.refreshToken.findMany({
-      where: { userId: payload.sub },
-    });
-
-    let matched: (typeof records)[number] | undefined;
-    for (const record of records) {
-      if (await argon2.verify(record.tokenHash, presented)) {
-        matched = record;
-        break;
-      }
-    }
+    const matched = await this.findRefreshRecord(
+      payload.sub,
+      payload.jti,
+      presented,
+    );
     if (!matched) {
       throw new UnauthorizedException('Invalid refresh token');
     }

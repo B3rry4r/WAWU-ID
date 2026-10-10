@@ -23,6 +23,7 @@
     "test:signup-local": "node test/signup-sequence.local.mjs",
     "test:signup-email-local": "node test/signup-email.local.mjs",
     "test:session-local": "node test/session-security.local.mjs",
+    "test:refresh-local": "node test/refresh-lookup.local.mjs",
     "contract:build": "nest build && node dist/contract/emit-contract.js"
   },
   "dependencies": {

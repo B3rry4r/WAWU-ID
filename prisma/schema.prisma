@@ -134,6 +134,10 @@ model WawuUser {
 model RefreshToken {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @map("user_id") @db.Uuid
+  /// The jti signed into the refresh token, the key a refresh or a sign-out
+  /// finds this row by. NULL on rows stored before AUTH-08 (those tokens are
+  /// matched by the old scan until they expire).
+  jti       String?  @unique
   tokenHash String   @map("token_hash")
   expiresAt DateTime @map("expires_at")
   createdAt DateTime @default(now()) @map("created_at")
