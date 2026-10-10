@@ -146,8 +146,8 @@ describe('the access token says which contact is proven (JOIN-03)', () => {
     });
 
     it('a row read without the column, or without a phone, proves nothing and never throws', () => {
-      const bare = (over: Record<string, unknown>) =>
-        payload(user({ phoneVerifiedAt: new Date(), ...over } as never));
+      const bare = (over: Partial<WawuUser>) =>
+        payload(user({ phoneVerifiedAt: new Date(), ...over }));
       expect(bare({ phoneVerifiedFor: undefined })).toMatchObject({
         phoneVerified: false,
       });
