@@ -59,14 +59,14 @@ export class AuthController {
     return { data: await this.auth.register(dto) };
   }
 
-  /** Mobile sign-up: creates the account and sends a code (mailed by default, texted with SIGNUP_VERIFY_CHANNEL=sms). No session yet. */
+  /** Mobile sign-up: creates the account and sends a code (texted by default, mailed with SIGNUP_VERIFY_CHANNEL=email). No session yet. */
   @Post('signup')
   @HttpCode(HttpStatus.CREATED)
   @ApiTags('app')
   @ApiOperation({
     operationId: 'signup',
     summary:
-      'A3: create the account and send a 6-digit code: mailed to the email by default (R-39, `channel: email` in the answer), texted to the phone when SIGNUP_VERIFY_CHANNEL is sms. No session yet (R-36).',
+      'A3: create the account and send a 6-digit code: texted to the phone by default, mailed to the email when SIGNUP_VERIFY_CHANNEL is email (R-39; the answer then carries `channel: email`). No session yet (R-36).',
   })
   @ApiBody({ type: SignupDto })
   @ApiResponse({ status: 201, type: SignupStartedAnswer })

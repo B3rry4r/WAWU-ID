@@ -21,6 +21,7 @@ import {
   type PhoneVerificationConfig,
 } from './phone-verification.config';
 import { RateLimiter } from './rate-limiter.service';
+import { applyClashPlan, planClashes, SAME_ACCOUNT } from './unproven-phone';
 import {
   signupSequenceConfig,
   type SignupSequenceConfig,
@@ -98,8 +99,6 @@ export function problem(
 
 const WRONG_CODE = () =>
   problem(400, 'PHONE_CODE_INVALID', "That code isn't right");
-
-const SAME_ACCOUNT = 'An account with this email or phone already exists';
 
 /** A hash to check against when there is nothing real to check, so the work is the same. */
 let dummyHash: Promise<string> | undefined;
@@ -222,28 +221,14 @@ export class PhoneSignupService {
         claim = false;
         const clashes = await tx.wawuUser.findMany({
           where: { OR: [{ email }, { phone: { in: variants } }] },
-          include: { phoneVerification: true },
+          include: { phoneVerification: true, signupProgress: true },
         });
-        for (const other of clashes) {
-          if (other.phoneVerification && !other.phoneVerifiedAt) {
-            // An unproven sign-up holds nothing: a newer sign-up takes its
-            // email and phone, and it is gone, together with its secret.
-            await tx.wawuUser.deleteMany({ where: { id: other.id } });
-          } else if (
-            other.email === email &&
-            !variants.includes(other.phone) &&
-            other.phoneVerifiedAt &&
-            !other.emailVerified
-          ) {
-            // A mobile account holds this email without having proven it. It
-            // keeps the email: nothing is taken from it here. This sign-up
-            // gets the email only if its person also enters the code mailed
-            // to it (see confirm).
-            claim = true;
-          } else {
-            throw new ConflictException(SAME_ACCOUNT);
-          }
-        }
+        // What is in the way is decided first and changed after, so a sign-up
+        // refused for one clash gives nothing up for another. A number nobody
+        // has proven does not stand in the way (see unproven-phone.ts).
+        const plan = planClashes(clashes, email, variants);
+        claim = plan.claimEmail;
+        await applyClashPlan(tx, plan, variants);
 
         await tx.wawuUser.create({
           data: {

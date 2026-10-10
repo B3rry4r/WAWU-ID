@@ -24,6 +24,7 @@ import {
   type SignupStarted,
 } from './phone-signup.service';
 import { RateLimiter } from './rate-limiter.service';
+import { applyClashPlan, planClashes, SAME_ACCOUNT } from './unproven-phone';
 import {
   signupSequenceConfig,
   type SignupSequenceConfig,
@@ -52,8 +53,6 @@ export type EmailSignupStarted = Omit<SignupStarted, 'emailCodeRequired'> & {
 const WRONG_CODE = () =>
   problem(400, 'EMAIL_CODE_INVALID', "That code isn't right");
 
-const SAME_ACCOUNT = 'An account with this email or phone already exists';
-
 /** A hash to check against when there is nothing real to check, so the work is the same. */
 let dummyHash: Promise<string> | undefined;
 const decoyHash = () => (dummyHash ??= argon2.hash('no pending sign-up'));
@@ -69,7 +68,9 @@ const addressOf = (pending: Pending): string =>
 
 /**
  * Mobile sign-up whose required check is a code mailed to the email (AUTH-07,
- * DECISIONS R-39). Used while SIGNUP_VERIFY_CHANNEL is `email`, the default.
+ * DECISIONS R-39). Used while SIGNUP_VERIFY_CHANNEL is `email`. The default is `phone`; the
+ * owner switches to `email` after the app build with email codes is out and
+ * Resend is confirmed in production.
  *
  * It is PhoneSignupService's sign-up with the channel changed and nothing else:
  * `signup` creates the account, mails a 6-digit code and returns an `attempt`
@@ -183,29 +184,14 @@ export class EmailSignupService {
         claim = false;
         const clashes = await tx.wawuUser.findMany({
           where: { OR: [{ email }, { phone: { in: variants } }] },
-          include: { phoneVerification: true },
+          include: { phoneVerification: true, signupProgress: true },
         });
-        for (const other of clashes) {
-          if (other.phoneVerification && !other.phoneVerifiedAt) {
-            // An unproven sign-up holds nothing: a newer sign-up takes its
-            // email and phone, and it is gone, together with its secret.
-            await tx.wawuUser.deleteMany({ where: { id: other.id } });
-          } else if (
-            other.email === email &&
-            !variants.includes(other.phone) &&
-            other.phoneVerifiedAt &&
-            !other.emailVerified
-          ) {
-            // A mobile account that proved its phone (not its email) holds
-            // this email. It keeps the email: nothing is taken from it here.
-            // This sign-up gets the email only when its person enters the code
-            // mailed to it, which is the proof the other account never gave
-            // (see confirm).
-            claim = true;
-          } else {
-            throw new ConflictException(SAME_ACCOUNT);
-          }
-        }
+        // What is in the way is decided first and changed after, so a sign-up
+        // refused for one clash gives nothing up for another. A number nobody
+        // has proven does not stand in the way (see unproven-phone.ts).
+        const plan = planClashes(clashes, email, variants);
+        claim = plan.claimEmail;
+        await applyClashPlan(tx, plan, variants);
 
         await tx.wawuUser.create({
           data: {
@@ -324,6 +310,11 @@ export class EmailSignupService {
     }
 
     const now = new Date();
+    const previous = {
+      codeHash: pending.codeHash,
+      expiresAt: pending.expiresAt,
+      lastSentAt: pending.lastSentAt,
+    };
     await this.prisma.phoneVerification.update({
       where: { id: pending.id },
       data: {
@@ -332,12 +323,30 @@ export class EmailSignupService {
         lastSentAt: now,
       },
     });
-    // Not awaited: the answer must not take longer for a real sign-up than for
-    // a made-up one.
-    void this.deliver(email, code).catch(async (err: unknown) => {
-      this.logger.error(`Sign-up code was not mailed: ${String(err)}`);
+    // Waited for, like the sign-up's mail: the person is never told a code was
+    // sent that was not. Only someone holding a live secret reaches this line,
+    // so how long it takes tells nobody anything they do not already know.
+    try {
+      await this.deliver(email, code);
+    } catch (err) {
+      if (!(err instanceof MailSendError)) throw err;
+      this.logger.error(`Sign-up code was not mailed: ${err.message}`);
+      // Nothing was delivered: the code that was live stays live, the three
+      // reserved mails are given back, and the person may ask again at once.
+      await this.prisma.phoneVerification.update({
+        where: { id: pending.id },
+        data: previous,
+      });
+      await this.limits.release('signup-mail-gap', email);
+      await this.limits.release('signup-mail-day', email);
       await this.limits.release('signup-mail-global', 'all');
-    });
+      await this.limits.forget('signup-mail-gap', email);
+      throw problem(
+        503,
+        'EMAIL_SEND_FAILED',
+        'We could not send the code. Try again in a moment.',
+      );
+    }
     return this.shape(phone);
   }
 

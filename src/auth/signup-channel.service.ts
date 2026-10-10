@@ -35,11 +35,14 @@ const DISABLED = (active: SignupVerifyChannel) =>
  * (SIGNUP_VERIFY_CHANNEL, AUTH-07, DECISIONS R-39). The routes call this and
  * nothing else; it hands each call to the service for the active channel:
  *
- *   email (default)  EmailSignupService: the code is mailed; the phone-code
- *                    routes answer 409 SIGNUP_CHANNEL_DISABLED.
- *   sms              PhoneSignupService, exactly as AUTH-03 built it: the code
+ *   phone (default)  PhoneSignupService, exactly as AUTH-03 built it: the code
  *                    is texted; the email-code routes answer 409
  *                    SIGNUP_CHANNEL_DISABLED. Its answers carry no new field.
+ *                    Deploying this service changes nothing by itself.
+ *   email            EmailSignupService: the code is mailed; the phone-code
+ *                    routes answer 409 SIGNUP_CHANNEL_DISABLED. Switched on
+ *                    after the app build with email codes is out and Resend is
+ *                    confirmed in production (see signup-channel.config.ts).
  *
  * Neither service is removed or changed in behaviour, so setting the variable
  * back restores the other channel. A sign-up started under one channel is
@@ -59,7 +62,7 @@ export class SignupChannelService {
     this.channel = signupVerifyChannel(config);
     if (signupVerifyChannelIsUnrecognised(config)) {
       this.logger.warn(
-        'SIGNUP_VERIFY_CHANNEL is not "email" or "sms": using "email".',
+        'SIGNUP_VERIFY_CHANNEL is not "email" or "phone": using "phone".',
       );
     }
     this.logger.log(`Sign-up codes go by ${this.channel}.`);
@@ -83,7 +86,7 @@ export class SignupChannelService {
     attempt: string,
     address: string,
   ): Promise<PhoneCodeSent> {
-    if (this.channel !== 'sms') throw DISABLED(this.channel);
+    if (this.channel !== 'phone') throw DISABLED(this.channel);
     return this.phone.start(phone, attempt, address);
   }
 
@@ -94,7 +97,7 @@ export class SignupChannelService {
     emailCode: string | undefined,
     address: string,
   ): Promise<TokenPair & { user: UserResponse }> {
-    if (this.channel !== 'sms') throw DISABLED(this.channel);
+    if (this.channel !== 'phone') throw DISABLED(this.channel);
     return this.phone.confirm(phone, attempt, code, emailCode, address);
   }
 

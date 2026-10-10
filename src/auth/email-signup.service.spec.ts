@@ -179,15 +179,14 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
     const second = mail.lastCode();
     await confirm(attempt, second);
 
-    // a mail that fails in the background, and one that fails at sign-up
+    // a mail that fails on a resend, and one that fails at sign-up
     const other = await begin({
       email: 'b@example.test',
       phone: '08031230099',
     });
     later(61);
     mail.failNext = true;
-    await service.start('+2348031230099', other.attempt, IP);
-    await flush();
+    await failure(service.start('+2348031230099', other.attempt, IP));
     mail.failNext = true;
     await failure(
       service.signup(
@@ -438,13 +437,17 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
     expect(mail.sent).toHaveLength(0);
   });
 
-  it('gives each client address a daily share of the budget (100)', async () => {
-    build({ SMS_LIMIT_IP_PER_HOUR: '1000' });
-    for (let i = 0; i < 100; i++) {
+  it('gives each client address a daily share of the budget (SMS_LIMIT_IP_PER_DAY, 100 by default)', async () => {
+    // The figure is read from configuration, so a small one proves the limit
+    // without a hundred password hashes (which timed out on a busy machine).
+    build({ SMS_LIMIT_IP_PER_HOUR: '1000', SMS_LIMIT_IP_PER_DAY: '5' });
+    for (let i = 0; i < 5; i++) {
       await service.start(`+23480312${String(10000 + i)}`, 'x', IP);
     }
     const body = await failure(service.start(PHONE, 'x', IP));
     expect(body).toMatchObject({ statusCode: 429, code: 'RATE_LIMITED' });
+    // another address is not affected
+    await service.start(PHONE, 'x', '198.51.100.9');
   });
 
   it('stops everyone once the whole service has mailed its daily budget', async () => {
@@ -601,6 +604,214 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
     // Nothing was delivered, so nothing is held against the person: no wait.
     const { attempt, code } = await begin();
     expect((await confirm(attempt, code)).accessToken).toBe('a');
+  });
+
+  // ── a refused mail on a resend (the verifier's F3) ──────────────────────────
+
+  it('answers 503 EMAIL_SEND_FAILED when Resend refuses a resend, so the person is never told a code was sent that was not', async () => {
+    const first = await begin();
+    later(61);
+    mail.failNext = true;
+    const body = await failure(service.start(PHONE, first.attempt, IP));
+    expect(body).toMatchObject({ statusCode: 503, code: 'EMAIL_SEND_FAILED' });
+    expect(mail.sent).toHaveLength(1);
+  });
+
+  it('keeps the code that was live working when a resend is refused', async () => {
+    const first = await begin();
+    later(61);
+    mail.failNext = true;
+    await failure(service.start(PHONE, first.attempt, IP));
+    expect((await confirm(first.attempt, first.code)).accessToken).toBe('a');
+  });
+
+  it('holds nothing against the person for a refused resend: no wait, and the day and the service keep their count', async () => {
+    build({ SMS_LIMIT_PHONE_PER_DAY: '2', SMS_LIMIT_GLOBAL_PER_DAY: '2' });
+    const first = await begin();
+    later(61);
+    mail.failNext = true;
+    await failure(service.start(PHONE, first.attempt, IP));
+    // at once, with no wait: the refused mail used none of the 2 a day
+    const out = await service.start(PHONE, first.attempt, IP);
+    expect(out.channel).toBe('email');
+    expect(mail.sent).toHaveLength(2);
+    // ... and the 2 are now really spent: the next one is refused for the day
+    later(61);
+    const spent = await failure(service.start(PHONE, first.attempt, IP));
+    expect(spent).toMatchObject({ statusCode: 429, code: 'RATE_LIMITED' });
+  });
+
+  it("gives the email's day back when a resend is refused (a day of 2 still allows a second mail)", async () => {
+    build({ SMS_LIMIT_PHONE_PER_DAY: '2' });
+    const first = await begin();
+    later(61);
+    mail.failNext = true;
+    await failure(service.start(PHONE, first.attempt, IP));
+    later(61);
+    await service.start(PHONE, first.attempt, IP);
+    expect(mail.sent).toHaveLength(2);
+  });
+
+  it("gives the whole service's day back when a resend is refused", async () => {
+    build({ SMS_LIMIT_GLOBAL_PER_DAY: '2' });
+    const first = await begin();
+    later(61);
+    mail.failNext = true;
+    await failure(service.start(PHONE, first.attempt, IP));
+    later(61);
+    await service.start(PHONE, first.attempt, IP);
+    expect(mail.sent).toHaveLength(2);
+  });
+
+  // ── the limits that protect the mailbox and the code (the verifier's F5) ────
+
+  it('limits code checks from one client address on the mailed route (120 an hour, from CONFIRM_LIMIT_IP_PER_HOUR)', async () => {
+    build({ CONFIRM_LIMIT_IP_PER_HOUR: '3' });
+    for (let i = 0; i < 3; i++) {
+      const wrongSecret = await failure(
+        service.confirm(PHONE, 'made-up', '123456', IP),
+      );
+      expect(wrongSecret.code).toBe('EMAIL_CODE_INVALID');
+    }
+    const body = await failure(service.confirm(PHONE, 'made-up', '123456', IP));
+    expect(body).toMatchObject({ statusCode: 429, code: 'RATE_LIMITED' });
+    // another client address is not affected
+    const other = await failure(
+      service.confirm(PHONE, 'made-up', '123456', '198.51.100.9'),
+    );
+    expect(other.code).toBe('EMAIL_CODE_INVALID');
+  });
+
+  it('limits how many mails one email can be sent in a day by SIGN-UP (5), whatever the whole service is allowed', async () => {
+    for (let i = 0; i < 5; i++) {
+      later(61);
+      await service.signup(
+        { ...signup, password: `another-long-one-${i}` },
+        IP,
+      );
+    }
+    expect(mail.sent).toHaveLength(5);
+    later(61);
+    const body = await failure(
+      service.signup({ ...signup, password: 'one-too-many-passwords' }, IP),
+    );
+    expect(body).toMatchObject({ statusCode: 429, code: 'RATE_LIMITED' });
+    expect(mail.sent).toHaveLength(5);
+  });
+
+  it("gives the email's day back when the mail of a SIGN-UP is refused", async () => {
+    build({ SMS_LIMIT_PHONE_PER_DAY: '1' });
+    mail.failNext = true;
+    await failure(service.signup(signup, IP));
+    // at once, and the one mail a day this email is allowed is still there
+    const { attempt, code } = await begin();
+    expect((await confirm(attempt, code)).accessToken).toBe('a');
+  });
+
+  it("gives the whole service's day back when the mail of a SIGN-UP is refused", async () => {
+    build({ SMS_LIMIT_GLOBAL_PER_DAY: '1' });
+    mail.failNext = true;
+    await failure(service.signup(signup, IP));
+    const { attempt, code } = await begin();
+    expect((await confirm(attempt, code)).accessToken).toBe('a');
+  });
+
+  // ── a phone is held only once it is proven (the verifier's F1) ──────────────
+
+  /** A mailed sign-up taken to the end: the email is proven, the phone only typed. */
+  async function typedOnly(over: Partial<typeof signup>, phone = PHONE) {
+    const made = await begin(over);
+    await confirm(made.attempt, made.code, phone);
+    return prisma.users[prisma.users.length - 1];
+  }
+
+  it("THE ATTACK: a stranger who typed the victim's number cannot keep the victim out; the newer sign-up takes the number", async () => {
+    const stranger = await typedOnly({ email: 'stranger@example.test' });
+    expect(stranger).toMatchObject({
+      phone: PHONE,
+      emailVerified: true,
+      phoneVerifiedAt: null,
+    });
+
+    // the victim signs up with their own mailbox and their own number
+    const victim = await begin({ email: 'victim@example.test' });
+    expect(prisma.users).toHaveLength(2);
+    const holder = prisma.users.find((u) => u.email === 'victim@example.test');
+    expect(holder?.phone).toBe(PHONE);
+    // the stranger keeps the account, the email and the password, and loses only the number
+    expect(stranger).toMatchObject({
+      email: 'stranger@example.test',
+      emailVerified: true,
+      phone: `released:${stranger.id}`,
+      passwordHash: stranger.passwordHash,
+    });
+    // ... and the victim's code works, so they are signed in
+    expect((await confirm(victim.attempt, victim.code)).accessToken).toBe('a');
+    expect(holder).toMatchObject({ phone: PHONE, emailVerified: true });
+  });
+
+  it('lets the number move on again: after three people in a row only the newest holds it, and no two accounts share a phone value', async () => {
+    const a = await typedOnly({ email: 'a@example.test' });
+    const b = await typedOnly({ email: 'b@example.test' });
+    const c = await typedOnly({ email: 'c@example.test' });
+    expect([a.phone, b.phone, c.phone]).toEqual([
+      `released:${a.id}`,
+      `released:${b.id}`,
+      PHONE,
+    ]);
+    expect(prisma.users).toHaveLength(3);
+  });
+
+  it('never takes a number that was proven, even from an account in the sign-up sequence', async () => {
+    prisma.users.push(
+      legacy({
+        id: 'proven',
+        email: 'proven@example.test',
+        phone: PHONE,
+        phoneVerifiedAt: new Date(),
+      }),
+    );
+    prisma.progress.push('proven');
+    const body = await failure(service.signup(signup, IP));
+    expect(body.statusCode).toBe(409);
+    expect(prisma.users).toHaveLength(1);
+    expect(prisma.users[0].phone).toBe(PHONE);
+    expect(mail.sent).toHaveLength(0);
+  });
+
+  it('never takes the number of a long-standing account that is not in the sign-up sequence (clearing it would lose real user data)', async () => {
+    prisma.users.push(
+      legacy({ id: 'web', email: 'web@example.test', phone: PHONE }),
+    );
+    const body = await failure(service.signup(signup, IP));
+    expect(body.statusCode).toBe(409);
+    expect(prisma.users[0].phone).toBe(PHONE);
+    expect(mail.sent).toHaveLength(0);
+  });
+
+  it("releases nobody's number when the sign-up is refused for another clash (the email is taken)", async () => {
+    const holder = await typedOnly({ email: 'holder@example.test' });
+    prisma.users.push(
+      legacy({
+        id: 'other',
+        email: 'taken@example.test',
+        phone: '+2348099900099',
+      }),
+    );
+    const body = await failure(
+      service.signup({ ...signup, email: 'taken@example.test' }, IP),
+    );
+    expect(body.statusCode).toBe(409);
+    expect(holder.phone).toBe(PHONE);
+  });
+
+  it('treats the same email with the same number as an account that exists (409), not a newer sign-up', async () => {
+    const holder = await typedOnly({});
+    later(61);
+    const body = await failure(service.signup(signup, IP));
+    expect(body.statusCode).toBe(409);
+    expect(holder.phone).toBe(PHONE);
+    expect(prisma.users).toHaveLength(1);
   });
 
   // ── resume ──────────────────────────────────────────────────────────────────

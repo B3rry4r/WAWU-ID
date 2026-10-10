@@ -53,7 +53,7 @@ export class SignupSequenceController {
   @ApiOperation({
     operationId: 'signupResume',
     summary:
-      'Where a sign-up stands before its code (mailed by default, texted with SIGNUP_VERIFY_CHANNEL=sms), for an app that was closed between A3 and A4. Sends nothing. A sign-up whose code went by the other channel answers `details`.',
+      'Where a sign-up stands before its code (texted by default, mailed with SIGNUP_VERIFY_CHANNEL=email), for an app that was closed between A3 and A4. Sends nothing. A sign-up whose code went by the other channel answers `details`.',
   })
   @ApiBody({ type: SignupResumeDto })
   @ApiResponse({ status: 200, type: SignupResumeAnswer })
@@ -74,7 +74,7 @@ export class SignupSequenceController {
   @ApiOperation({
     operationId: 'signupEmailCodeStart',
     summary:
-      'A4 (mailed sign-up, the default): mail another code. The same answer for any number and secret; only a live sign-up is mailed. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are texted.',
+      'A4 (mailed sign-up, SIGNUP_VERIFY_CHANNEL=email): mail another code. The same answer for any number and secret; only a live sign-up is mailed, and when Resend refuses it the answer is 503 EMAIL_SEND_FAILED (the code that was live keeps working). Answers 409 SIGNUP_CHANNEL_DISABLED while codes are texted.',
   })
   @ApiBody({ type: SignupEmailCodeStartDto })
   @ApiResponse({ status: 200, type: EmailSignupCodeSentAnswer })
@@ -96,7 +96,8 @@ export class SignupSequenceController {
   @ApiResponse({
     status: 503,
     type: ErrorBody,
-    description: 'EMAIL_NOT_CONFIGURED.',
+    description:
+      'EMAIL_NOT_CONFIGURED, EMAIL_SEND_FAILED (the mail was not handed over: no wait was started and the code that was live still works).',
   })
   async emailCodeStart(
     @Body() dto: SignupEmailCodeStartDto,
@@ -116,7 +117,7 @@ export class SignupSequenceController {
   @ApiOperation({
     operationId: 'signupEmailCodeConfirm',
     summary:
-      'A4 (mailed sign-up, the default): check the mailed code. Right: the email is proven and the first session is issued. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are texted.',
+      'A4 (mailed sign-up, SIGNUP_VERIFY_CHANNEL=email): check the mailed code. Right: the email is proven and the first session is issued. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are texted.',
   })
   @ApiBody({ type: SignupEmailCodeConfirmDto })
   @ApiResponse({ status: 200, type: SessionAnswer })

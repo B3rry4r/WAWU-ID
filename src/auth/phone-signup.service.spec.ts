@@ -543,6 +543,39 @@ describe('PhoneSignupService', () => {
     expect(prisma.users).toHaveLength(1);
   });
 
+  it('takes a number an account only typed at a mailed sign-up, and proves it by text (AUTH-07: nobody holds a number they have not proven)', async () => {
+    prisma.users.push(
+      legacy({
+        id: 'typed',
+        email: 'typed@example.test',
+        phone: PHONE,
+        phoneVerifiedAt: null,
+      }),
+    );
+    prisma.progress.push('typed');
+    const { attempt, code } = await begin({ email: 'owner@example.test' });
+    expect(prisma.users.find((u) => u.id === 'typed')).toMatchObject({
+      email: 'typed@example.test',
+      phone: 'released:typed',
+    });
+    expect((await confirm(attempt, code)).accessToken).toBe('a');
+    expect(
+      prisma.users.find((u) => u.email === 'owner@example.test'),
+    ).toMatchObject({ phone: PHONE });
+    expect(
+      prisma.users.find((u) => u.email === 'owner@example.test')
+        ?.phoneVerifiedAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it("keeps a long-standing account's number: it is not in the sign-up sequence", async () => {
+    prisma.users.push(legacy({ id: 'web', phone: PHONE }));
+    const body = await failure(service.signup(signup, IP));
+    expect(body.statusCode).toBe(409);
+    expect(prisma.users[0].phone).toBe(PHONE);
+    expect(sms.sent).toHaveLength(0);
+  });
+
   it('never takes the email of an account that proved it, or of a web or legacy account', async () => {
     prisma.users.push(legacy({ email: 'real@example.test' }));
     const body = await failure(

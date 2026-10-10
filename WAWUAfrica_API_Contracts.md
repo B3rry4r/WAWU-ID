@@ -75,15 +75,29 @@ DECISIONS.md R-39; owner, 6 Oct 2026: Fintava, and with it SMS, is being removed
 
 | `SIGNUP_VERIFY_CHANNEL` | the 6-digit code is | it proves | routes that work |
 |---|---|---|---|
-| `email` (default) | **mailed** to the email typed at sign-up, through the same mailer as every other mail | the EMAIL (`email_verified`); the phone is stored, not proven (`phone_verified_at` stays empty) | `POST /auth/signup`, `/auth/signup/email-code/start`, `/auth/signup/email-code/confirm`, `/auth/signup/resume` |
-| `sms` | texted to the phone through the SmsProvider (Fintava) | the phone, exactly as AUTH-03 built it | `POST /auth/signup`, `/auth/phone/verify/start`, `/auth/phone/verify/confirm`, `/auth/signup/resume` |
+| `phone` (default) | texted to the phone through the SmsProvider (Fintava) | the phone, exactly as AUTH-03 built it | `POST /auth/signup`, `/auth/phone/verify/start`, `/auth/phone/verify/confirm`, `/auth/signup/resume` |
+| `email` | **mailed** to the email typed at sign-up, through the same mailer as every other mail | the EMAIL (`email_verified`); the phone is stored, not proven (`phone_verified_at` stays empty) | `POST /auth/signup`, `/auth/signup/email-code/start`, `/auth/signup/email-code/confirm`, `/auth/signup/resume` |
 
-- Anything other than a literal `sms` (any case, trimmed) is `email`: a typo never starts
-  spending on texts. The value is read at start; change it and restart to switch.
+**Release steps, in this order.** The default is `phone` so that deploying this service
+changes nothing by itself.
+1. Deploy this service with the value unset or `phone`. Nothing changes for anyone.
+2. Release the app build with email codes to testers. An older build and a sign-up already
+   waiting on a text keep working while the value is `phone` (the new build draws the texted
+   screens when the answer carries no `channel`; only A3's line says email).
+3. Confirm Resend in production: `RESEND_API_KEY` is set on this service and the sending
+   domain is verified, shown by a real mail arriving in a real mailbox.
+4. Set `SIGNUP_VERIFY_CHANNEL=email` and restart.
+5. From then an older app build, and any sign-up still waiting on a text, is refused (409
+   `SIGNUP_CHANNEL_DISABLED`; the person starts again at A3).
+Rolling back is setting `phone` and restarting.
+
+- Only a literal `email` (any case, trimmed) selects email. Anything else, nothing, a typo, or
+  `sms` (this value's earlier name), is `phone`: a typo never switches off the sign-up that
+  is live. The value is read at start; change it and restart to switch.
 - A route of the channel that is not active answers **409 `SIGNUP_CHANNEL_DISABLED`**
   (`{ statusCode, code, message }`), before it checks anything or spends anything. No route
-  is removed, the SMS provider and the phone-code routes stay, so setting `sms` restores the
-  old behaviour byte for byte (the `sms` answers carry no new field).
+  is removed, the SMS provider and the phone-code routes stay, so `phone` is the old
+  behaviour byte for byte (the `phone` answers carry no new field).
 - A sign-up started under one channel is answered `step: 'details'` by `resume` once the
   other is active (its code went the other way): the person starts again at A3. Nothing is
   lost: a new sign-up replaces the unproven one.
@@ -95,10 +109,19 @@ DECISIONS.md R-39; owner, 6 Oct 2026: Fintava, and with it SMS, is being removed
   is made at confirm) and its `email` step is already done, so the next step is A11 or A12.
 - No code is ever logged by these routes. Mail is handed over strictly: no transport
   (`RESEND_API_KEY` unset) answers 503 `EMAIL_NOT_CONFIGURED` and an error from Resend
-  answers 503 `EMAIL_SEND_FAILED`, with no account written for the first and the mail given
-  back for the second.
+  answers 503 `EMAIL_SEND_FAILED` on the sign-up and on a resend alike, with no account
+  written for the first, and, for the others, the reserved mail given back, no wait held
+  against the person, and (on a resend) the code that was live left working.
+- **A phone is held only once it is proven.** With `email`, a typed number is not proven, so
+  it is not held against a newer sign-up for it: the newer sign-up takes the number and the
+  older account keeps everything but the number (its `phone` becomes `released:<id>`, which
+  every client reads as no phone). This applies to an account that finished a mailed sign-up
+  and whose `phone_verified_at` is empty. A proven number, and the number of a long-standing
+  (web or legacy) account that is not in the sign-up sequence, are held as before (409). A
+  code sent to a number its account only typed does not reset that account's password or
+  sign in to it (`forgot-password` by text, `reset-password` by text, `otp/verify`).
 
-#### POST /auth/signup with `channel: email` (the default)
+#### POST /auth/signup with `channel: email` (`SIGNUP_VERIFY_CHANNEL=email`)
 ```json
 Response 201:
 { "data": { "phone": "+2348031234412", "expiresIn": 600, "resendIn": 60,
@@ -122,7 +145,7 @@ Request:  { "phone": "+2348031234412", "attempt": "Xk3..." }
 Response 200: { "data": { "phone": "+2348031234412", "expiresIn": 600, "resendIn": 60, "channel": "email" } }
 Error 409 SIGNUP_CHANNEL_DISABLED
 Error 429 EMAIL_CODE_RESEND_TOO_SOON / RATE_LIMITED
-Error 503 EMAIL_NOT_CONFIGURED
+Error 503 EMAIL_NOT_CONFIGURED / EMAIL_SEND_FAILED   (a refused resend: the code that was live still works)
 ```
 
 #### POST /auth/signup/email-code/confirm
@@ -145,7 +168,7 @@ sign-up sequence).
 channel: 'email', maskedEmail }` (the step is still named `phone`: it is the code step,
 whichever way the code travels).
 
-The text below describes `SIGNUP_VERIFY_CHANNEL=sms`.
+The text below describes `SIGNUP_VERIFY_CHANNEL=phone` (the default).
 
 ### POST /auth/signup (mobile sign-up, phone code)
 Creates the account and texts a 6-digit code to the phone. **Issues no session**:

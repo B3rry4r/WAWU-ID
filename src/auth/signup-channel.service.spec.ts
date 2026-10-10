@@ -40,31 +40,50 @@ const cfg = (env: Record<string, string | undefined>) =>
   ({ get: (name: string) => env[name] }) as never;
 
 describe('SIGNUP_VERIFY_CHANNEL (the setting)', () => {
-  it('is email by default, and only a literal sms turns the texts back on', () => {
-    expect(signupVerifyChannel(cfg({}))).toBe('email');
+  it("is phone by default (today's behaviour), and only a literal email turns the mailed code on", () => {
+    expect(signupVerifyChannel(cfg({}))).toBe('phone');
     expect(signupVerifyChannel(cfg({ SIGNUP_VERIFY_CHANNEL: '' }))).toBe(
-      'email',
+      'phone',
+    );
+    expect(signupVerifyChannel(cfg({ SIGNUP_VERIFY_CHANNEL: 'phone' }))).toBe(
+      'phone',
     );
     expect(signupVerifyChannel(cfg({ SIGNUP_VERIFY_CHANNEL: 'email' }))).toBe(
       'email',
     );
-    expect(signupVerifyChannel(cfg({ SIGNUP_VERIFY_CHANNEL: 'sms' }))).toBe(
-      'sms',
-    );
-    expect(signupVerifyChannel(cfg({ SIGNUP_VERIFY_CHANNEL: ' SMS ' }))).toBe(
-      'sms',
+    expect(signupVerifyChannel(cfg({ SIGNUP_VERIFY_CHANNEL: ' EMAIL ' }))).toBe(
+      'email',
     );
   });
 
-  it('treats a typo as email (a typo must never start spending on texts) and says so', () => {
-    for (const typo of ['text', 'sm', 'phone', 'true']) {
+  it('still reads `sms`, the name this value had in an earlier build, as phone', () => {
+    expect(signupVerifyChannel(cfg({ SIGNUP_VERIFY_CHANNEL: 'sms' }))).toBe(
+      'phone',
+    );
+    expect(signupVerifyChannel(cfg({ SIGNUP_VERIFY_CHANNEL: ' SMS ' }))).toBe(
+      'phone',
+    );
+    expect(
+      signupVerifyChannelIsUnrecognised(cfg({ SIGNUP_VERIFY_CHANNEL: 'sms' })),
+    ).toBe(false);
+  });
+
+  it('treats a typo as phone (a typo must never switch off the sign-up that is live) and says so', () => {
+    for (const typo of ['emial', 'e-mail', 'mail', 'true', '1']) {
       const config = cfg({ SIGNUP_VERIFY_CHANNEL: typo });
-      expect(signupVerifyChannel(config)).toBe('email');
+      expect(signupVerifyChannel(config)).toBe('phone');
       expect(signupVerifyChannelIsUnrecognised(config)).toBe(true);
     }
     expect(signupVerifyChannelIsUnrecognised(cfg({}))).toBe(false);
     expect(
-      signupVerifyChannelIsUnrecognised(cfg({ SIGNUP_VERIFY_CHANNEL: 'sms' })),
+      signupVerifyChannelIsUnrecognised(
+        cfg({ SIGNUP_VERIFY_CHANNEL: 'email' }),
+      ),
+    ).toBe(false);
+    expect(
+      signupVerifyChannelIsUnrecognised(
+        cfg({ SIGNUP_VERIFY_CHANNEL: 'phone' }),
+      ),
     ).toBe(false);
   });
 });
@@ -156,9 +175,122 @@ describe('SignupChannelService (one setting, both channels)', () => {
     jest.restoreAllMocks();
   });
 
-  describe('with the setting at its default (email)', () => {
-    it('signs up by mailing a code, sends no text at all, and signs the person in on the right code', async () => {
+  describe('with the setting at its default (phone: what runs today)', () => {
+    it('signs up exactly as before: texts the code, proves the PHONE, mails nothing', async () => {
       const service = serviceFor(undefined);
+      expect(service.channel).toBe('phone');
+      const out = await service.signup(signup, IP);
+      expect(Object.keys(out).sort()).toEqual([
+        'attempt',
+        'emailCodeRequired',
+        'expiresIn',
+        'phone',
+        'resendIn',
+      ]);
+      expect(out).toMatchObject({ expiresIn: 300, emailCodeRequired: false });
+      expect(sms.sent).toHaveLength(1);
+      expect(sms.sent[0].to).toBe(PHONE);
+      expect(mail.sent).toHaveLength(0);
+
+      const session = await service.phoneConfirm(
+        PHONE,
+        out.attempt,
+        sms.lastCode(),
+        undefined,
+        IP,
+      );
+      expect(session.accessToken).toBe('a');
+      expect(prisma.users[0].phoneVerifiedAt).toBeInstanceOf(Date);
+      expect(prisma.users[0].emailVerified).toBe(false);
+      expect(prisma.progress).toHaveLength(0);
+    });
+
+    it('answers the email-code routes 409 SIGNUP_CHANNEL_DISABLED, touching nothing', async () => {
+      const service = serviceFor(undefined);
+      const out = await service.signup(signup, IP);
+      const start = await failure(
+        service.emailCodeStart(PHONE, out.attempt, IP),
+      );
+      expect(start).toEqual({
+        statusCode: 409,
+        code: 'SIGNUP_CHANNEL_DISABLED',
+        message:
+          'Sign-up codes are sent by text message right now. Start again to get one.',
+      });
+      const confirm = await failure(
+        service.emailCodeConfirm(PHONE, out.attempt, sms.lastCode(), IP),
+      );
+      expect(confirm.code).toBe('SIGNUP_CHANNEL_DISABLED');
+      expect(mail.sent).toHaveLength(0);
+      expect(sessionFor).not.toHaveBeenCalled();
+    });
+
+    it('keeps working across a deploy: a sign-up waiting on a text and an older app build see no change', async () => {
+      const before = serviceFor(undefined);
+      const out = await before.signup(signup, IP);
+      const code = sms.lastCode();
+      // the new build starts, with no value set for the setting
+      const after = serviceFor(undefined);
+      expect(await after.resume(PHONE, out.attempt, IP)).toMatchObject({
+        step: 'phone',
+      });
+      // an older app build only knows the phone routes
+      const session = await after.phoneConfirm(
+        PHONE,
+        out.attempt,
+        code,
+        undefined,
+        IP,
+      );
+      expect(session.accessToken).toBe('a');
+      expect(mail.sent).toHaveLength(0);
+    });
+
+    it('reads `sms`, an earlier name for this value, the same way', async () => {
+      const service = serviceFor('sms');
+      expect(service.channel).toBe('phone');
+      await service.signup(signup, IP);
+      expect(sms.sent).toHaveLength(1);
+      expect(mail.sent).toHaveLength(0);
+    });
+
+    it('resumes with the old answer: no channel field', async () => {
+      const service = serviceFor(undefined);
+      const out = await service.signup(signup, IP);
+      const answer = await service.resume(PHONE, out.attempt, IP);
+      expect(answer).toEqual({
+        step: 'phone',
+        phone: PHONE,
+        expiresIn: 300,
+        resendIn: 60,
+        emailCodeRequired: false,
+        accountType: null,
+      });
+    });
+
+    it('asks for an email code beside the texted one when an account holds the email unproven, as before', async () => {
+      const holder: UserRow = {
+        id: 'holder',
+        email: 'ada@example.test',
+        phone: '+2348077700022',
+        emailVerified: false,
+        phoneVerifiedAt: new Date(),
+        passwordHash: 'x',
+        occupation: null,
+        accountType: null,
+        phoneVerification: null,
+      };
+      prisma.users.push(holder);
+      const service = serviceFor(undefined);
+      const out = await service.signup(signup, IP);
+      expect(out.emailCodeRequired).toBe(true);
+      expect(sendOtpForPhoneFlow).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('with SIGNUP_VERIFY_CHANNEL=email (the switch, made after the app build and Resend are confirmed)', () => {
+    it('signs up by mailing a code, sends no text at all, and signs the person in on the right code', async () => {
+      const service = serviceFor('email');
       expect(service.channel).toBe('email');
       const out = await service.signup(signup, IP);
       expect(out).toMatchObject({
@@ -229,108 +361,24 @@ describe('SignupChannelService (one setting, both channels)', () => {
     });
   });
 
-  describe('with SIGNUP_VERIFY_CHANNEL=sms (the rollback)', () => {
-    it('signs up exactly as before: texts the code, proves the PHONE, mails nothing', async () => {
-      const service = serviceFor('sms');
-      expect(service.channel).toBe('sms');
-      const out = await service.signup(signup, IP);
-      expect(Object.keys(out).sort()).toEqual([
-        'attempt',
-        'emailCodeRequired',
-        'expiresIn',
-        'phone',
-        'resendIn',
-      ]);
-      expect(out).toMatchObject({ expiresIn: 300, emailCodeRequired: false });
-      expect(sms.sent).toHaveLength(1);
-      expect(sms.sent[0].to).toBe(PHONE);
-      expect(mail.sent).toHaveLength(0);
-
-      const session = await service.phoneConfirm(
-        PHONE,
-        out.attempt,
-        sms.lastCode(),
-        undefined,
-        IP,
-      );
-      expect(session.accessToken).toBe('a');
-      expect(prisma.users[0].phoneVerifiedAt).toBeInstanceOf(Date);
-      expect(prisma.users[0].emailVerified).toBe(false);
-      expect(prisma.progress).toHaveLength(0);
-    });
-
-    it('answers the email-code routes 409 SIGNUP_CHANNEL_DISABLED, touching nothing', async () => {
-      const service = serviceFor('sms');
-      const out = await service.signup(signup, IP);
-      const start = await failure(
-        service.emailCodeStart(PHONE, out.attempt, IP),
-      );
-      expect(start).toEqual({
-        statusCode: 409,
-        code: 'SIGNUP_CHANNEL_DISABLED',
-        message:
-          'Sign-up codes are sent by text message right now. Start again to get one.',
-      });
-      const confirm = await failure(
-        service.emailCodeConfirm(PHONE, out.attempt, sms.lastCode(), IP),
-      );
-      expect(confirm.code).toBe('SIGNUP_CHANNEL_DISABLED');
-      expect(mail.sent).toHaveLength(0);
-      expect(sessionFor).not.toHaveBeenCalled();
-    });
-
-    it('resumes with the old answer: no channel field', async () => {
-      const service = serviceFor('sms');
-      const out = await service.signup(signup, IP);
-      const answer = await service.resume(PHONE, out.attempt, IP);
-      expect(answer).toEqual({
-        step: 'phone',
-        phone: PHONE,
-        expiresIn: 300,
-        resendIn: 60,
-        emailCodeRequired: false,
-        accountType: null,
-      });
-    });
-
-    it('asks for an email code beside the texted one when an account holds the email unproven, as before', async () => {
-      const holder: UserRow = {
-        id: 'holder',
-        email: 'ada@example.test',
-        phone: '+2348077700022',
-        emailVerified: false,
-        phoneVerifiedAt: new Date(),
-        passwordHash: 'x',
-        occupation: null,
-        accountType: null,
-        phoneVerification: null,
-      };
-      prisma.users.push(holder);
-      const service = serviceFor('sms');
-      const out = await service.signup(signup, IP);
-      expect(out.emailCodeRequired).toBe(true);
-      expect(sendOtpForPhoneFlow).toHaveBeenCalledTimes(1);
-    });
-  });
-
   describe('switching the setting while a sign-up is waiting', () => {
-    it('email to sms: the mailed sign-up is answered `details`, and its code does nothing on the phone route', async () => {
+    it('email to phone: the mailed sign-up is answered `details`, and its code does nothing on the phone route', async () => {
       const out = await serviceFor('email').signup(signup, IP);
       const code = mail.lastCode();
-      const nowSms = serviceFor('sms');
-      expect(await nowSms.resume(PHONE, out.attempt, IP)).toEqual({
+      const nowPhone = serviceFor('phone');
+      expect(await nowPhone.resume(PHONE, out.attempt, IP)).toEqual({
         step: 'details',
       });
       const body = await failure(
-        nowSms.phoneConfirm(PHONE, out.attempt, code, undefined, IP),
+        nowPhone.phoneConfirm(PHONE, out.attempt, code, undefined, IP),
       );
       expect(body.code).toBe('PHONE_CODE_INVALID');
       expect(sessionFor).not.toHaveBeenCalled();
       expect(prisma.users[0].phoneVerifiedAt).toBeNull();
     });
 
-    it('sms to email: the texted sign-up is answered `details`, and its code does nothing on the email route', async () => {
-      const out = await serviceFor('sms').signup(signup, IP);
+    it('phone to email: the texted sign-up is answered `details`, and its code does nothing on the email route', async () => {
+      const out = await serviceFor('phone').signup(signup, IP);
       const code = sms.lastCode();
       const nowEmail = serviceFor('email');
       expect(await nowEmail.resume(PHONE, out.attempt, IP)).toEqual({
@@ -345,7 +393,7 @@ describe('SignupChannelService (one setting, both channels)', () => {
     });
 
     it('a person whose code went the other way starts again at A3 and the new sign-up replaces the old', async () => {
-      await serviceFor('sms').signup(signup, IP);
+      await serviceFor('phone').signup(signup, IP);
       later(61);
       const out = await serviceFor('email').signup(signup, IP);
       expect(prisma.users).toHaveLength(1);

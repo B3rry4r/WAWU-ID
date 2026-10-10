@@ -93,8 +93,6 @@ async function boot(env = {}) {
       RESEND_API_KEY: '',
       FINTAVA_BASE_URL: `http://127.0.0.1:${SMS_PORT}/api/dev`,
       FINTAVA_API_KEY: 'local-test-key',
-      // These scripts check the TEXTED sign-up (AUTH-03, AUTH-05); the default is now email (AUTH-07).
-      SIGNUP_VERIFY_CHANNEL: 'sms',
       ...env,
     },
   });

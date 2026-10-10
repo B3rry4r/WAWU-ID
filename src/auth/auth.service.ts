@@ -27,6 +27,7 @@ import { RegisterDto } from './dto/register.dto';
 import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { phoneForClients } from './released-phone';
+import { holdsUnprovenPhone } from './unproven-phone';
 import { TokenPair, TokensService } from './tokens.service';
 
 export interface UserResponse {
@@ -844,8 +845,13 @@ export class AuthService {
     // Find or create a phone-only user (e.g. WAWUBasket-style signup).
     const existing = await this.prisma.wawuUser.findUnique({
       where: { phone },
-      include: { phoneVerification: true },
+      include: { phoneVerification: true, signupProgress: true },
     });
+    // A code for a number the account only typed at sign-up does not sign in
+    // to that account: the code shows who holds the number, not who holds it.
+    if (existing && holdsUnprovenPhone(existing)) {
+      throw new UnauthorizedException('Invalid or expired OTP');
+    }
     if (existing) this.refuseIfPending(existing);
     let user: WawuUser | null = existing;
     if (!user) {
@@ -978,6 +984,7 @@ export class AuthService {
           { phone: identifier.trim() },
         ],
       },
+      include: { signupProgress: true },
     });
 
     if (user) {
@@ -1004,8 +1011,10 @@ export class AuthService {
         // route group, which Next.js strips from the URL (/auth/... 404s).
         const resetUrl = `${appUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
         await this.mail.sendPasswordReset(user.email, resetUrl, user.firstName);
-      } else if (phoneForClients(user.phone)) {
-        // Mobile apps: send a 6-digit reset code over WhatsApp.
+      } else if (phoneForClients(user.phone) && !holdsUnprovenPhone(user)) {
+        // Mobile apps: send a 6-digit reset code over WhatsApp. Not to a
+        // number the account only typed at sign-up: whoever holds that number
+        // has not been shown to be who holds the account.
         await this.otp.generateAndSend(user.phone);
       }
     }
@@ -1046,10 +1055,11 @@ export class AuthService {
           { phone: identifier.trim() },
         ],
       },
-      include: { phoneVerification: true },
+      include: { phoneVerification: true, signupProgress: true },
     });
     // Same error whether the user or the code is wrong — never leak existence.
-    if (!user) {
+    // A number the account only typed at sign-up is not a way to reset it.
+    if (!user || holdsUnprovenPhone(user)) {
       throw new UnauthorizedException('Invalid or expired reset code');
     }
 

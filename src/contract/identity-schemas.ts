@@ -169,7 +169,7 @@ export class SignupStartedSchema extends PhoneCodeSentSchema {
   @ApiPropertyOptional({
     enum: ['email'],
     description:
-      '`email`: the code was mailed (the default, DECISIONS R-39): send it to `signup/email-code/*`. Absent: the code was texted (`SIGNUP_VERIFY_CHANNEL=sms`): `phone/verify/*`.',
+      '`email`: the code was mailed (`SIGNUP_VERIFY_CHANNEL=email`, DECISIONS R-39): send it to `signup/email-code/*`. Absent: the code was texted (the default): `phone/verify/*`.',
   })
   channel?: 'email';
 

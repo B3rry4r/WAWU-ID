@@ -1,5 +1,5 @@
 // AUTH-07 live-seam check: the mobile sign-up with an EMAIL code (and, behind the
-// same setting, the old text), on the real wawu-id, built and started on this
+// same setting, the old text, which is the default), on the real wawu-id, built and started on this
 // machine, against a LOCAL Postgres. Nothing leaves the computer:
 //   - Resend is answered by a receiver on 127.0.0.1 (the SDK reads
 //     RESEND_BASE_URL), which keeps every mail it is handed. The codes are read
@@ -25,6 +25,8 @@ const DB =
   process.env.A07_DATABASE_URL ??
   'postgresql://postgres:postgres@localhost:5432/a07_id_test?schema=public';
 const ID_PORT = Number(process.env.A07_ID_PORT ?? 5101);
+const RESEND_PORT = Number(process.env.A07_RESEND_PORT ?? 0);
+const FINTAVA_PORT = Number(process.env.A07_FINTAVA_PORT ?? 0);
 const ID = `http://127.0.0.1:${ID_PORT}`;
 
 const isLocal = (url) => /@(localhost|127\.0\.0\.1)[:/]/.test(url);
@@ -71,7 +73,7 @@ const resend = createServer((req, res) => {
     );
   });
 });
-await new Promise((r) => resend.listen(0, '127.0.0.1', r));
+await new Promise((r) => resend.listen(RESEND_PORT, '127.0.0.1', r));
 const RESEND_URL = `http://127.0.0.1:${resend.address().port}`;
 const mailsTo = (address) =>
   mailsHeld.filter((m) => [].concat(m.to).includes(address));
@@ -91,7 +93,7 @@ const fintava = createServer((req, res) => {
     res.end('{}');
   });
 });
-await new Promise((r) => fintava.listen(0, '127.0.0.1', r));
+await new Promise((r) => fintava.listen(FINTAVA_PORT, '127.0.0.1', r));
 const FINTAVA_URL = `http://127.0.0.1:${fintava.address().port}/api/dev`;
 const texts = () =>
   fintavaCalls
@@ -175,8 +177,8 @@ try {
   await sql('select 1');
   await sql('truncate wawu_users, rate_counters, phone_guess_budgets cascade');
 
-  // ═══ 1. the default: the code is mailed ════════════════════════════════════
-  await boot();
+  // ═══ 1. SIGNUP_VERIFY_CHANNEL=email: the code is mailed ═════════════════════
+  await boot({ SIGNUP_VERIFY_CHANNEL: 'email' });
   ok(
     'the service says where codes go',
     log.join('').includes('Sign-up codes go by email.'),
@@ -476,7 +478,7 @@ try {
   await halt();
 
   // ═══ 2. mail that cannot go out ════════════════════════════════════════════
-  await boot();
+  await boot({ SIGNUP_VERIFY_CHANNEL: 'email' });
   resendStatus = 500;
   const email3 = `chi.${stamp}@example.test`;
   r = await post('/auth/signup', {
@@ -500,9 +502,61 @@ try {
     r.status === 201 && !!mailCode(email3),
     JSON.stringify(r.json),
   );
+  // F3: a resend that Resend refuses is not reported as sent
+  const attempt3 = r.json.data.attempt;
+  const code3 = mailCode(email3);
+  await sleep(6500);
+  const mailsBeforeResend = mailsTo(email3).length;
+  resendStatus = 500;
+  r = await post('/auth/signup/email-code/start', {
+    phone: '+2348035550103',
+    attempt: attempt3,
+  });
+  ok(
+    'a resend Resend refuses answers 503 EMAIL_SEND_FAILED, not "sent"',
+    r.status === 503 && r.json.code === 'EMAIL_SEND_FAILED',
+    JSON.stringify(r.json),
+  );
+  resendStatus = 200;
+  r = await post('/auth/signup/email-code/start', {
+    phone: '+2348035550103',
+    attempt: attempt3,
+  });
+  ok(
+    '... and the person may ask again at once: no wait was held against them',
+    r.status === 200 && mailsTo(email3).length === mailsBeforeResend + 2,
+    JSON.stringify(r.json) + mailsTo(email3).length,
+  );
+  // the refused mail left the live code alone: refuse once more, then use the code from the mail that did go
+  await sleep(6500);
+  const liveCode = mailCode(email3);
+  resendStatus = 500;
+  r = await post('/auth/signup/email-code/start', {
+    phone: '+2348035550103',
+    attempt: attempt3,
+  });
+  resendStatus = 200;
+  const stale = await post('/auth/signup/email-code/confirm', {
+    phone: '+2348035550103',
+    attempt: attempt3,
+    code: code3 === liveCode ? wrong(code3) : code3,
+  });
+  const live = await post('/auth/signup/email-code/confirm', {
+    phone: '+2348035550103',
+    attempt: attempt3,
+    code: liveCode,
+  });
+  ok(
+    'the code that was live before a refused resend still works; the code before it does not',
+    r.status === 503 &&
+      stale.status === 400 &&
+      live.status === 200 &&
+      !!live.json.data.accessToken,
+    JSON.stringify([r.json, stale.json, live.json]).slice(0, 300),
+  );
   await halt();
 
-  await boot({ RESEND_API_KEY: '' });
+  await boot({ SIGNUP_VERIFY_CHANNEL: 'email', RESEND_API_KEY: '' });
   const before = mailsHeld.length;
   r = await post('/auth/signup', {
     email: `dayo.${stamp}@example.test`,
@@ -523,11 +577,11 @@ try {
   );
   await halt();
 
-  // ═══ 3. the rollback: SIGNUP_VERIFY_CHANNEL=sms ════════════════════════════
-  await boot({ SIGNUP_VERIFY_CHANNEL: 'sms' });
+  // ═══ 3. the default: nothing set, so the code is texted (today's behaviour) ═
+  await boot();
   ok(
-    'the service says codes go by sms',
-    log.join('').includes('Sign-up codes go by sms.'),
+    'with nothing set the service says codes go by phone',
+    log.join('').includes('Sign-up codes go by phone.'),
   );
   const mailsBefore = mailsHeld.length;
   const email4 = `emeka.${stamp}@example.test`;
@@ -539,7 +593,7 @@ try {
   });
   const attempt4 = r.json.data?.attempt;
   ok(
-    'sms: sign-up answers as it always did (no channel field) and texts one code',
+    'phone (the default): sign-up answers as it always did (no channel field) and texts one code',
     r.status === 201 &&
       !('channel' in r.json.data) &&
       !('maskedEmail' in r.json.data) &&
@@ -554,13 +608,13 @@ try {
     attempt: attempt4,
   });
   ok(
-    'sms: the email-code routes answer 409 SIGNUP_CHANNEL_DISABLED',
+    'phone (the default): the email-code routes answer 409 SIGNUP_CHANNEL_DISABLED',
     r.status === 409 && r.json.code === 'SIGNUP_CHANNEL_DISABLED',
     JSON.stringify(r.json),
   );
   r = await post('/auth/signup/resume', { phone: phone4, attempt: attempt4 });
   ok(
-    'sms: resume answers the old shape',
+    'phone (the default): resume answers the old shape',
     r.status === 200 &&
       r.json.data.step === 'phone' &&
       !('channel' in r.json.data) &&
@@ -573,7 +627,7 @@ try {
     code: textCode(phone4),
   });
   ok(
-    'sms: the texted code gives the first session, as before',
+    'phone (the default): the texted code gives the first session, as before',
     r.status === 200 && !!r.json.data.accessToken,
     JSON.stringify(r.json),
   );
@@ -584,7 +638,7 @@ try {
     )
   ).rows[0];
   ok(
-    'sms: the PHONE is proven, the email is not, and no sequence row is made at confirm',
+    'phone (the default): the PHONE is proven, the email is not, and no sequence row is made at confirm',
     row.phone_verified_at !== null &&
       row.email_verified === false &&
       (
@@ -597,14 +651,14 @@ try {
   );
   r = await get('/auth/signup/progress', r.json.data.accessToken);
   ok(
-    'sms: the next step is the email step, as before',
+    'phone (the default): the next step is the email step, as before',
     r.status === 200 && r.json.data.step === 'email',
     JSON.stringify(r.json),
   );
 
-  // a sign-up started under email is answered `details` once sms is active
+  // a sign-up started under email is answered `details` once phone is active
   await halt();
-  await boot();
+  await boot({ SIGNUP_VERIFY_CHANNEL: 'email' });
   const email5 = `femi.${stamp}@example.test`;
   r = await post('/auth/signup', {
     email: email5,
@@ -615,12 +669,16 @@ try {
   const code5 = mailCode(email5);
   await halt();
   await boot({ SIGNUP_VERIFY_CHANNEL: 'sms' });
+  ok(
+    'the earlier name `sms` is read as phone',
+    log.join('').includes('Sign-up codes go by phone.'),
+  );
   r = await post('/auth/signup/resume', {
     phone: '+2348035550106',
     attempt: attempt5,
   });
   ok(
-    'switching to sms while a mailed sign-up waits: resume answers details',
+    'switching to phone while a mailed sign-up waits: resume answers details',
     r.status === 200 && r.json.data.step === 'details',
     JSON.stringify(r.json),
   );

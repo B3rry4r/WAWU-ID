@@ -78,8 +78,16 @@ export function fakePrisma() {
       },
     },
     wawuUser: {
+      // As Prisma answers `include: { signupProgress: true }`: the row, or null.
       findMany: ({ where }: { where: Where }) =>
-        Promise.resolve(users.filter((u) => matches(u, where))),
+        Promise.resolve(
+          users
+            .filter((u) => matches(u, where))
+            .map((u) => ({
+              ...u,
+              signupProgress: progress.includes(u.id) ? { userId: u.id } : null,
+            })),
+        ),
       create: ({ data }: { data: Row }) => {
         const { phoneVerification, ...rest } = data as {
           phoneVerification?: { create: Partial<CodeRow> };
