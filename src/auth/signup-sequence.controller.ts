@@ -20,6 +20,7 @@ import {
   EmailSignupCodeSentAnswer,
   ErrorBody,
   SessionAnswer,
+  SignupChannelAnswer,
   SignupProgressAnswer,
   SignupResumeAnswer,
 } from '../contract/identity-schemas';
@@ -47,6 +48,18 @@ export class SignupSequenceController {
     private readonly sequence: SignupSequenceService,
     private readonly session: SessionReader,
   ) {}
+
+  /** A3 asks before the person types anything: which way the sign-up code will travel. */
+  @Get('channel')
+  @ApiOperation({
+    operationId: 'signupChannel',
+    summary:
+      'A3: which way the sign-up code will travel, so its line can name it: `phone` (texted, the default) or `email` (mailed, SIGNUP_VERIFY_CHANNEL=email). Needs no sign-in, reads no account and sends nothing.',
+  })
+  @ApiResponse({ status: 200, type: SignupChannelAnswer })
+  channel() {
+    return { data: { channel: this.signupChannel.channel } };
+  }
 
   @Post('resume')
   @HttpCode(HttpStatus.OK)

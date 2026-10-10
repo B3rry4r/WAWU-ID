@@ -1,22 +1,33 @@
-// AUTH-07 round 2 live-seam check: nobody holds a phone number they have not
-// proven (the verifier's F1, "a stranger can hold anyone's phone number").
+// AUTH-07 round 3 live-seam check: a phone number an account only typed changes
+// hands when a newer sign-up PROVES it, and at no other moment (the verifier's
+// F-A, on top of round 2's F1).
 //
-// The attack, on the real wawu-id built and started on this machine against a
-// LOCAL Postgres, with nothing leaving the computer:
-//   1. a stranger signs up with the VICTIM's phone number and the stranger's own
+// The real wawu-id, built and started on this machine against a LOCAL Postgres,
+// with nothing leaving the computer:
+//   1. a stranger signs up (mailed) with the VICTIM's phone number and their own
 //      mailbox, and confirms with the code mailed to the stranger. The mailed
-//      code proves the stranger's EMAIL; the phone is only typed.
-//   2. the victim then signs up with their own mailbox and their own number.
-//      Before the fix this answered 409 "An account with this email or phone
-//      already exists", for good, with no way round it.
-// After the fix the newer sign-up takes the number: the stranger's account
-// keeps its email and its password but its phone is released (the column holds
-// `released:<id>`, which no client ever sees as a phone, G-16). A number that IS
-// proven (by a texted code), a number on a long-standing web account, and a
-// number on an account whose email clash refuses the sign-up all stay held.
+//      code proves the stranger's EMAIL; the number is only typed.
+//   2. F-A: a second stranger signs up with that number and NEVER confirms.
+//      Round 2 cleared the first stranger's number the moment that sign-up was
+//      made (an UNCONFIRMED sign-up stripped it). Round 3 changes nothing for
+//      the holder: the new account is made without a number and the answer says
+//      so (`phoneNotSaved`).
+//   3. the victim signs up MAILED with their own number: not refused, but the
+//      account goes ahead without the number (a mailed code proves no number),
+//      and says so; the holder keeps it until something proves it.
+//   4. the round 1 attack (the verifier's t8) under TEXTED sign-up: the victim
+//      signs up texted (the default channel), the text goes to the victim's
+//      number, nothing moves until the right code is entered; then the number is
+//      the victim's and the stranger keeps everything but the number.
+//   5. D1: a sign-up Resend refuses (503) releases nothing and leaves no pending
+//      row holding a number or an email.
+//   6. G11 and its kin: a code sent to a number its account only typed neither
+//      resets that account's password nor signs in to it.
+// A number that IS proven (by a texted code), and a number on a long-standing
+// web account, stay held.
 //
-//   createdb ba07r2_a07_id_test
-//   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ba07r2_a07_id_test?schema=public \
+//   createdb ba07r3_a07_id_test
+//   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ba07r3_a07_id_test?schema=public \
 //     npx prisma migrate deploy
 //   A07_DATABASE_URL=...same... npm run test:phone-hold-local
 //
@@ -32,13 +43,14 @@ import pg from 'pg';
 
 const DB =
   process.env.A07_DATABASE_URL ??
-  'postgresql://postgres:postgres@localhost:5432/ba07r2_a07_id_test?schema=public';
+  'postgresql://postgres:postgres@localhost:5432/ba07r3_a07_id_test?schema=public';
 const ID_PORT = Number(process.env.A07_ID_PORT ?? 6121);
 const RESEND_PORT = Number(process.env.A07_RESEND_PORT ?? 6122);
 const FINTAVA_PORT = Number(process.env.A07_FINTAVA_PORT ?? 6123);
 const ID = `http://127.0.0.1:${ID_PORT}`;
-// The value that means "the code is texted" (`sms` is accepted as the same thing).
-const TEXTED = process.env.A07_TEXTED_VALUE ?? 'phone';
+// The texted sections boot with the setting UNSET, which is the default and what runs
+// today (set A07_TEXTED_VALUE=phone to name it, or sms, its round 1 name).
+const TEXTED = process.env.A07_TEXTED_VALUE;
 
 const isLocal = (url) => /@(localhost|127\.0\.0\.1)[:/]/.test(url);
 if (!isLocal(DB) || !/a07_id_test/.test(DB)) {
@@ -67,10 +79,17 @@ const ok = (name, cond, detail = '') => {
 
 // ── Resend stand-in: keeps every mail ────────────────────────────────────────
 const mailsHeld = [];
+// While `resendRefuses` is true the stand-in answers like Resend refusing a send.
+let resendRefuses = false;
 const resend = createServer((req, res) => {
   let raw = '';
   req.on('data', (c) => (raw += c));
   req.on('end', () => {
+    if (resendRefuses) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end('{"message":"the stand-in refuses"}');
+      return;
+    }
     const body = JSON.parse(raw || '{}');
     mailsHeld.push({ to: body.to, subject: body.subject, html: body.html });
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -179,6 +198,7 @@ const userBy = async (email) =>
       [email],
     )
   ).rows[0];
+let r;
 const claimPayload = (jwt) =>
   JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString());
 
@@ -203,13 +223,33 @@ try {
   await sql('select 1');
   await sql('truncate wawu_users, rate_counters, phone_guess_budgets cascade');
 
-  // ═══ 1. the attack (the verifier's t8) ══════════════════════════════════════
+  const rowsFor = async (email) =>
+    (
+      await sql(
+        `select (select count(*) from wawu_users where email = $1)::int as users,
+                (select count(*) from phone_verifications v join wawu_users u on u.id = v.user_id where u.email = $1)::int as pending`,
+        [email],
+      )
+    ).rows[0];
+  const holdersOf = async (phone) =>
+    (await sql('select email from wawu_users where phone = $1', [phone])).rows.map(
+      (r) => r.email,
+    );
+
+  // ═══ 1. a stranger types the victim's number first ═════════════════════════
   await boot({ SIGNUP_VERIFY_CHANNEL: 'email' });
   const P = '+2348035550201';
   const strangerEmail = `stranger.${stamp}@example.test`;
   const victimEmail = `victim.${stamp}@example.test`;
-
   const strangerPassword = 'the-strangers-own-password';
+
+  r = await call('GET', '/auth/signup/channel');
+  ok(
+    'GET /auth/signup/channel says email while the setting is email (A3 words its line by it)',
+    r.status === 200 && r.json?.data?.channel === 'email',
+    show(r.json),
+  );
+
   const stranger = await mailedAccount(
     strangerEmail,
     '0803 555 0201',
@@ -219,7 +259,8 @@ try {
     'the stranger signs up with the victim\'s number and their own mailbox, and confirms with the mailed code (the session is theirs)',
     stranger.start.status === 201 &&
       stranger.confirmed?.status === 200 &&
-      !!stranger.confirmed.json.data.accessToken,
+      !!stranger.confirmed.json.data.accessToken &&
+      stranger.start.json.data.phoneNotSaved === undefined,
     show([stranger.start.json, stranger.confirmed?.json]),
   );
   let held = await userBy(strangerEmail);
@@ -231,60 +272,160 @@ try {
     show(held),
   );
 
-  const victim = await mailedAccount(victimEmail, '08035550201');
+  // ═══ 2. F-A: an UNCONFIRMED sign-up takes nothing ═══════════════════════════
+  const griefEmail = `grief.${stamp}@example.test`;
+  const grief = await post('/auth/signup', {
+    email: griefEmail,
+    phone: '08035550201',
+    password,
+  });
   ok(
-    'THE ATTACK FAILS: the victim signs up with their own number and mailbox and is not refused (201, not 409)',
-    victim.start.status === 201,
-    show(victim.start.json),
+    'F-A: a second sign-up for that number is accepted (201), and its answer says the number was not saved',
+    grief.status === 201 && grief.json?.data?.phoneNotSaved === true,
+    show(grief.json),
   );
-  ok(
-    '... and confirms with the code mailed to their own address (200)',
-    victim.confirmed?.status === 200 && !!victim.confirmed.json.data.accessToken,
-    show(victim.confirmed?.json),
-  );
-  const victimRow = await userBy(victimEmail);
   held = await userBy(strangerEmail);
+  const griefRow = await userBy(griefEmail);
   ok(
-    'the victim now holds the number',
-    victimRow?.phone === P && victimRow.phone_verified_at === null,
-    show(victimRow),
-  );
-  ok(
-    'the stranger\'s account keeps its email and loses the number (the released marker, never a phone)',
-    held?.email === strangerEmail &&
-      held.email_verified === true &&
-      /^released:/.test(held.phone),
+    'F-A: it never confirms, and the holder keeps its number (no released marker)',
+    held?.phone === P && !/^released:/.test(held.phone),
     show(held),
   );
-  let r = await post('/auth/login', {
+  ok(
+    'F-A: the account it made holds no number at all (the marker, never a phone), its sign-up row keeps the number typed',
+    /^released:/.test(griefRow?.phone ?? '') &&
+      (
+        await sql(
+          'select v.phone from phone_verifications v join wawu_users u on u.id = v.user_id where u.email = $1',
+          [griefEmail],
+        )
+      ).rows[0]?.phone === P,
+    show(griefRow),
+  );
+  // the pending sign-up expires, and a later sign-up for something else runs: still nothing moves
+  await sql(
+    "update phone_verifications set signup_expires_at = now() - interval '1 hour' where phone = $1",
+    [P],
+  );
+  await post('/auth/signup', {
+    email: `unrelated.${stamp}@example.test`,
+    phone: '08035550299',
+    password,
+  });
+  ok(
+    'F-A: after that pending sign-up expires, nobody holds a different number than before',
+    (await userBy(strangerEmail))?.phone === P &&
+      (await holdersOf(P)).join() === strangerEmail,
+    show(await holdersOf(P)),
+  );
+  r = await post('/auth/login', {
     identifier: strangerEmail,
     password: strangerPassword,
   });
   ok(
-    'the stranger still signs in by email, and the account now answers with NO phone (an empty string, the Hub reads that as none)',
-    r.status === 200 &&
-      r.json.data.user.phone === '' &&
-      claimPayload(r.json.data.accessToken).phone === '',
-    show(r.json),
-  );
-  r = await post('/auth/login', {
-    identifier: P,
-    password: strangerPassword,
-  });
-  ok(
-    'signing in by the number now finds the victim, not the stranger (the stranger\'s password does not open it)',
-    r.status === 401,
-    show(r.json),
-  );
-  r = await post('/auth/login', { identifier: P, password });
-  ok(
-    'the victim signs in, by their number or their email, and the account answers with the number',
+    'F-A: the holder still signs in and the answer carries its number',
     r.status === 200 && r.json.data.user.phone === P,
     show(r.json),
   );
 
-  // ═══ 2. what must stay held ══════════════════════════════════════════════════
-  // 2a. a long-standing account (a web account: nothing proven, no sign-up
+  // ═══ 3. the victim signs up MAILED with their own number ═══════════════════
+  const victimStart = await post('/auth/signup', {
+    email: victimEmail,
+    phone: '08035550201',
+    password,
+  });
+  ok(
+    'the victim\'s mailed sign-up is not refused (201), and the answer says the number was not saved',
+    victimStart.status === 201 && victimStart.json?.data?.phoneNotSaved === true,
+    show(victimStart.json),
+  );
+  r = await post('/auth/signup/resume', {
+    phone: victimStart.json.data.phone,
+    attempt: victimStart.json.data.attempt,
+  });
+  ok(
+    'an app that was closed on A4 is told the same thing when it comes back (resume)',
+    r.status === 200 &&
+      r.json.data.step === 'phone' &&
+      r.json.data.phoneNotSaved === true,
+    show(r.json),
+  );
+  const victimConfirmed = await post('/auth/signup/email-code/confirm', {
+    phone: victimStart.json.data.phone,
+    attempt: victimStart.json.data.attempt,
+    code: mailCode(victimEmail),
+  });
+  const victimRow = await userBy(victimEmail);
+  held = await userBy(strangerEmail);
+  ok(
+    'the victim confirms with the code mailed to their own address and is signed in, with no phone on the account',
+    victimConfirmed.status === 200 &&
+      !!victimConfirmed.json.data.accessToken &&
+      victimConfirmed.json.data.user.phone === '' &&
+      claimPayload(victimConfirmed.json.data.accessToken).phone === '' &&
+      /^released:/.test(victimRow?.phone ?? '') &&
+      victimRow.phone_verified_at === null,
+    show(victimConfirmed.json),
+  );
+  ok(
+    'a mailed code proves no number: the holder still holds it, untouched',
+    held?.phone === P && held.phone_verified_at === null,
+    show(held),
+  );
+
+  // ═══ 5. D1: a sign-up Resend refuses leaves nothing behind ════════════════
+  resendRefuses = true;
+  const refusedEmail = `refused.${stamp}@example.test`;
+  r = await post('/auth/signup', {
+    email: refusedEmail,
+    phone: '08035550201',
+    password,
+  });
+  resendRefuses = false;
+  ok(
+    'D1: a sign-up Resend refuses answers 503 EMAIL_SEND_FAILED with no secret',
+    r.status === 503 &&
+      r.json?.code === 'EMAIL_SEND_FAILED' &&
+      r.json?.attempt === undefined &&
+      r.json?.data === undefined,
+    show(r.json),
+  );
+  held = await userBy(strangerEmail);
+  const leftBehind = await rowsFor(refusedEmail);
+  ok(
+    'D1: it released nothing (the holder keeps its number) and left no account or pending row for its email',
+    held?.phone === P && leftBehind.users === 0 && leftBehind.pending === 0,
+    show([held, leftBehind]),
+  );
+  // ... also for a number nobody holds: no pending row stays holding it
+  resendRefuses = true;
+  const freeEmail = `free.${stamp}@example.test`;
+  r = await post('/auth/signup', {
+    email: freeEmail,
+    phone: '08035550207',
+    password,
+  });
+  resendRefuses = false;
+  ok(
+    'D1: a refused sign-up for a free number leaves no pending row holding the number or the email',
+    r.status === 503 &&
+      (await holdersOf('+2348035550207')).length === 0 &&
+      (await rowsFor(freeEmail)).users === 0,
+    show(r.json),
+  );
+  r = await post('/auth/signup', {
+    email: freeEmail,
+    phone: '08035550207',
+    password,
+  });
+  ok(
+    'D1: the same person asks again at once and is accepted',
+    r.status === 201 && !!r.json?.data?.attempt,
+    show(r.json),
+  );
+
+  // ═══ what must stay held ═══════════════════════════════════════════════════
+  // a long-standing account (a web account: nothing proven, no sign-up
   // sequence) keeps its number. Clearing it would lose real user data.
   const webPhone = '+2348035550202';
   const webEmail = `web.${stamp}@example.test`;
@@ -307,7 +448,7 @@ try {
     show(r.json),
   );
 
-  // 2b. a sign-up refused for its email clash releases nothing
+  // a sign-up refused for its email clash changes nothing for the number's holder
   const holderPhone = '+2348035550203';
   const holderEmail = `holder.${stamp}@example.test`;
   await mailedAccount(holderEmail, '08035550203');
@@ -317,12 +458,12 @@ try {
     password,
   });
   ok(
-    'a sign-up refused because its email is taken releases nobody\'s number',
+    'a sign-up refused because its email is taken changes nothing for the number\'s holder',
     r.status === 409 && (await userBy(holderEmail))?.phone === holderPhone,
     show(r.json),
   );
 
-  // 2c. the same account signing up again with its own email and number
+  // the same account signing up again with its own email and number
   await sleep(6500);
   r = await post('/auth/signup', {
     email: holderEmail,
@@ -336,8 +477,112 @@ try {
   );
   await halt();
 
-  // ═══ 3. a PROVEN number is held (the texted rollback proves it) ═════════════
+  // ═══ 4. the round 1 attack under TEXTED sign-up (the default channel) ═════
+  delete process.env.SIGNUP_VERIFY_CHANNEL;
   await boot({ SIGNUP_VERIFY_CHANNEL: TEXTED });
+  r = await call('GET', '/auth/signup/channel');
+  ok(
+    'GET /auth/signup/channel says phone while the setting is unset (A3 names the text)',
+    r.status === 200 && r.json?.data?.channel === 'phone',
+    show(r.json),
+  );
+  const textsBefore = texts().length;
+  const textedEmail = `owner.${stamp}@example.test`;
+  r = await post('/auth/signup', {
+    email: textedEmail,
+    phone: '08035550201',
+    password,
+  });
+  const textedAttempt = r.json?.data?.attempt;
+  ok(
+    'the victim signs up TEXTED with their own number: accepted (201), the answer is the one a plain texted sign-up gives, and one text goes to the number',
+    r.status === 201 &&
+      !!textedAttempt &&
+      r.json.data.phoneNotSaved === undefined &&
+      texts().length === textsBefore + 1 &&
+      texts().at(-1)?.to === P,
+    show(r.json),
+  );
+  ok(
+    'nothing moves before the code is entered: the holder keeps the number, and the new account holds none yet',
+    (await userBy(strangerEmail))?.phone === P &&
+      /^released:/.test((await userBy(textedEmail))?.phone ?? ''),
+    show(await holdersOf(P)),
+  );
+  const rightCode = textCode(P);
+  r = await post('/auth/phone/verify/confirm', {
+    phone: P,
+    attempt: textedAttempt,
+    code: rightCode === '000000' ? '111111' : '000000',
+  });
+  ok(
+    'a wrong code proves nothing and moves nothing (400)',
+    r.status === 400 && (await userBy(strangerEmail))?.phone === P,
+    show(r.json),
+  );
+  r = await post('/auth/phone/verify/confirm', {
+    phone: P,
+    attempt: textedAttempt,
+    code: rightCode,
+  });
+  ok(
+    'the right code proves the number (200, phone_verified_at set) and the victim now holds it',
+    r.status === 200 &&
+      (await userBy(textedEmail))?.phone === P &&
+      (await userBy(textedEmail))?.phone_verified_at !== null,
+    show(r.json),
+  );
+  held = await userBy(strangerEmail);
+  ok(
+    'only now does the stranger give the number up: the account keeps its email and verified email and holds the marker',
+    held?.email === strangerEmail &&
+      held.email_verified === true &&
+      /^released:/.test(held.phone),
+    show(held),
+  );
+  r = await post('/auth/login', {
+    identifier: strangerEmail,
+    password: strangerPassword,
+  });
+  ok(
+    'the stranger still signs in by email, and the account answers with NO phone (an empty string, the Hub reads that as none)',
+    r.status === 200 &&
+      r.json.data.user.phone === '' &&
+      claimPayload(r.json.data.accessToken).phone === '',
+    show(r.json),
+  );
+  r = await post('/auth/login', { identifier: P, password: strangerPassword });
+  ok(
+    'signing in by the number now finds the victim, not the stranger (the stranger\'s password does not open it)',
+    r.status === 401,
+    show(r.json),
+  );
+  r = await post('/auth/login', { identifier: P, password });
+  ok(
+    'the victim signs in by their number, and the account answers with the number',
+    r.status === 200 && r.json.data.user.phone === P,
+    show(r.json),
+  );
+
+  // an unconfirmed texted sign-up for a held number moves nothing, ever
+  const keptPhone = '+2348035550203';
+  const grabEmail = `grab.${stamp}@example.test`;
+  r = await post('/auth/signup', {
+    email: grabEmail,
+    phone: '08035550203',
+    password,
+  });
+  await sql(
+    "update phone_verifications set signup_expires_at = now() - interval '1 hour' where phone = $1",
+    [keptPhone],
+  );
+  ok(
+    'an unconfirmed texted sign-up for a number a mailed account typed moves nothing, even after it expires',
+    r.status === 201 && (await userBy(holderEmail))?.phone === keptPhone,
+    show(r.json),
+  );
+
+  // a PROVEN number is held
   const provenPhone = '+2348035550204';
   const provenEmail = `proven.${stamp}@example.test`;
   r = await post('/auth/signup', {
@@ -358,7 +603,7 @@ try {
   );
   await sleep(6500);
   r = await post('/auth/signup', {
-    email: `grab.${stamp}@example.test`,
+    email: `grab2.${stamp}@example.test`,
     phone: '08035550204',
     password,
   });
@@ -368,41 +613,7 @@ try {
     show(r.json),
   );
 
-  // 2d. under the texted channel a stranger's unproven number gives way too
-  const textedHolder = `texted.${stamp}@example.test`;
-  const loser = `loser.${stamp}@example.test`;
-  const loserPhone = '+2348035550205';
-  await sql(
-    `with u as (
-       insert into wawu_users (id, email, phone, email_verified, password_hash, status, updated_at)
-       values (gen_random_uuid(), $1, $2, true, 'x', 'active', now()) returning id)
-     insert into signup_progress (user_id, updated_at) select id, now() from u`,
-    [loser, loserPhone],
-  );
-  r = await post('/auth/signup', {
-    email: textedHolder,
-    phone: '08035550205',
-    password,
-  });
-  const textedAttempt = r.json?.data?.attempt;
-  const signedUp = r.status;
-  r = textedAttempt
-    ? await post('/auth/phone/verify/confirm', {
-        phone: loserPhone,
-        attempt: textedAttempt,
-        code: textCode(loserPhone),
-      })
-    : { status: signedUp, json: r.json };
-  ok(
-    'texted channel: a number typed (never proven) on an account that finished a mailed sign-up gives way to a newer sign-up, which proves it by text',
-    r.status === 200 &&
-      (await userBy(textedHolder))?.phone === loserPhone &&
-      (await userBy(textedHolder))?.phone_verified_at !== null &&
-      /^released:/.test((await userBy(loser))?.phone ?? ''),
-    show(r.json),
-  );
-
-  // ═══ 4. an unproven number is not proof of who is holding it ═══════════════
+  // ═══ 6. an unproven number is not proof of who is holding it ═══════════════
   // Whoever types a number at a mailed sign-up has not shown it is theirs, so a
   // code sent to that number must not open or reset the account that typed it.
   // (WhatsApp is not configured here, so the code goes to the account's own
@@ -413,7 +624,8 @@ try {
   await boot({ SIGNUP_VERIFY_CHANNEL: 'email' });
   const typedEmail = `typed.${stamp}@example.test`;
   const typedPhone = '+2348035550206';
-  await mailedAccount(typedEmail, '08035550206');
+  const typedPassword = 'the-typed-accounts-own-password';
+  await mailedAccount(typedEmail, '08035550206', typedPassword);
   const sessionsFor = async (phone) =>
     (await sql('select 1 from otp_sessions where phone = $1', [phone])).rowCount;
   const mailsBeforeReset = mailsTo(typedEmail).length;
@@ -452,10 +664,41 @@ try {
     show(r.json),
   );
 
-  // A code for the unproven number cannot sign anyone in to its account: plant
-  // a live code for it as the OTP route would have, then try it.
+  // A real code for the unproven number, made as the OTP route makes one (it
+  // goes to the holder's own mailbox here): it must neither reset the password
+  // of the account that typed the number (the verifier's G11) nor sign in to it.
   await post('/auth/otp/start', { phone: typedPhone });
   const otpCode = mailCode(typedEmail);
+  for (const identifier of [typedPhone, typedEmail]) {
+    r = await post('/auth/reset-password', {
+      identifier,
+      code: otpCode,
+      newPassword: 'attacker-chosen-password',
+    });
+    ok(
+      `G11: reset-password by text with a real code for the typed-only number (identifier ${identifier.includes('@') ? 'email' : 'phone'}) is refused (401)`,
+      r.status === 401,
+      show(r.json),
+    );
+  }
+  r = await post('/auth/login', {
+    identifier: typedEmail,
+    password: 'attacker-chosen-password',
+  });
+  ok(
+    'G11: the typed-only account\'s password did not change (the attacker\'s password gets 401)',
+    r.status === 401,
+    show(r.json),
+  );
+  r = await post('/auth/login', {
+    identifier: typedEmail,
+    password: typedPassword,
+  });
+  ok(
+    '... and its own password still signs in',
+    r.status === 200,
+    show(r.json),
+  );
   r = await post('/auth/otp/verify', { phone: typedPhone, code: otpCode });
   ok(
     'a code for an unproven number never signs in to the account that typed it (401)',

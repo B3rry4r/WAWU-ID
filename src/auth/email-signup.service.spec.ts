@@ -716,7 +716,7 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
     expect((await confirm(attempt, code)).accessToken).toBe('a');
   });
 
-  // ── a phone is held only once it is proven (the verifier's F1) ──────────────
+  // ── a number changes hands only when a newer sign-up PROVES it (round 3) ────
 
   /** A mailed sign-up taken to the end: the email is proven, the phone only typed. */
   async function typedOnly(over: Partial<typeof signup>, phone = PHONE) {
@@ -725,41 +725,155 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
     return prisma.users[prisma.users.length - 1];
   }
 
-  it("THE ATTACK: a stranger who typed the victim's number cannot keep the victim out; the newer sign-up takes the number", async () => {
-    const stranger = await typedOnly({ email: 'stranger@example.test' });
-    expect(stranger).toMatchObject({
-      phone: PHONE,
-      emailVerified: true,
-      phoneVerifiedAt: null,
-    });
+  it('F-A: an UNCONFIRMED sign-up for a number an account typed changes nothing for that account, and the account it makes holds no number', async () => {
+    const victim = await typedOnly({ email: 'victim@example.test' });
+    const before = { ...victim };
 
-    // the victim signs up with their own mailbox and their own number
-    const victim = await begin({ email: 'victim@example.test' });
-    expect(prisma.users).toHaveLength(2);
-    const holder = prisma.users.find((u) => u.email === 'victim@example.test');
-    expect(holder?.phone).toBe(PHONE);
-    // the stranger keeps the account, the email and the password, and loses only the number
-    expect(stranger).toMatchObject({
-      email: 'stranger@example.test',
-      emailVerified: true,
-      phone: `released:${stranger.id}`,
-      passwordHash: stranger.passwordHash,
+    const stranger = await begin({ email: 'stranger@example.test' });
+
+    // the victim's account is exactly as it was: same number, nothing released
+    expect(victim).toEqual(before);
+    expect(victim.phone).toBe(PHONE);
+    // the stranger's account holds no number at all (the marker every client reads as none) ...
+    const mine = prisma.users.find((u) => u.email === 'stranger@example.test');
+    expect(mine?.phone).toBe(`released:${mine?.id}`);
+    // ... and the answer says so, while its code step still keys on the number typed
+    expect(stranger.out).toMatchObject({
+      phone: PHONE,
+      phoneNotSaved: true,
+      channel: 'email',
     });
-    // ... and the victim's code works, so they are signed in
-    expect((await confirm(victim.attempt, victim.code)).accessToken).toBe('a');
-    expect(holder).toMatchObject({ phone: PHONE, emailVerified: true });
+    expect(prisma.codes()[0].phone).toBe(PHONE);
   });
 
-  it('lets the number move on again: after three people in a row only the newest holds it, and no two accounts share a phone value', async () => {
+  it('F-A: a pending sign-up that expires never gives anyone a number back or takes it', async () => {
+    const victim = await typedOnly({ email: 'victim@example.test' });
+    await begin({ email: 'stranger@example.test' });
+    later(24 * 3600 + 1);
+    // the next sign-up for anything finds the old pending one expired and still changes nothing
+    await begin({ email: 'unrelated@example.test', phone: '08031234499' });
+    expect(victim.phone).toBe(PHONE);
+  });
+
+  it("THE ATTACK (round 1): a stranger who typed the victim's number first does not lock the victim out, but the victim's mailed sign-up cannot take it either; it goes ahead without the number and says so", async () => {
+    const stranger = await typedOnly({ email: 'stranger@example.test' });
+
+    // the victim signs up with their own mailbox and their own number: not refused
+    const victim = await begin({ email: 'victim@example.test' });
+    expect(victim.out.phoneNotSaved).toBe(true);
+    expect((await confirm(victim.attempt, victim.code)).accessToken).toBe('a');
+
+    // the account was made and confirmed with no number; the stranger keeps theirs (a mailed code proves no number)
+    const mine = prisma.users.find((u) => u.email === 'victim@example.test');
+    expect(mine).toMatchObject({
+      emailVerified: true,
+      phone: `released:${mine?.id}`,
+      phoneVerifiedAt: null,
+    });
+    expect(stranger.phone).toBe(PHONE);
+  });
+
+  it('keeps the number typed on the sign-up row even when the account holds none, so resend and confirm still find the sign-up', async () => {
+    await typedOnly({ email: 'holder@example.test' });
+    const second = await begin({ email: 'second@example.test' });
+    later(61);
+    await service.start(PHONE, second.attempt, IP);
+    expect(mail.sent).toHaveLength(3);
+    const code = mail.lastCode();
+    expect((await confirm(second.attempt, code)).accessToken).toBe('a');
+  });
+
+  it('a number held by an account that only typed it is held in any of its written forms', async () => {
+    const holder = await typedOnly({ email: 'holder@example.test' });
+    for (const form of ['08031234412', '2348031234412', '+234 803 123 4412']) {
+      later(61);
+      const out = await service.signup(
+        {
+          ...signup,
+          email: `form${form.length}@example.test`,
+          phone: form,
+        },
+        IP,
+      );
+      expect(out.phoneNotSaved).toBe(true);
+    }
+    expect(holder.phone).toBe(PHONE);
+  });
+
+  it('describes a sign-up made without its number when an app that was closed comes back', async () => {
+    await typedOnly({ email: 'holder@example.test' });
+    const { attempt } = await begin({ email: 'second@example.test' });
+    const out = await service.resume(PHONE, attempt, IP);
+    expect(out).toMatchObject({
+      step: 'phone',
+      phone: PHONE,
+      channel: 'email',
+      phoneNotSaved: true,
+    });
+  });
+
+  it('says nothing about a number when the account was given it', async () => {
+    const { out, attempt } = await begin();
+    expect(out).not.toHaveProperty('phoneNotSaved');
+    expect(await service.resume(PHONE, attempt, IP)).not.toHaveProperty(
+      'phoneNotSaved',
+    );
+  });
+
+  it('still lets a newer sign-up replace an unconfirmed one that holds the number itself, as it always did', async () => {
+    const first = await begin({ email: 'first@example.test' });
+    later(61);
+    const second = await begin({ email: 'second@example.test' });
+    expect(second.out).not.toHaveProperty('phoneNotSaved');
+    expect(prisma.users).toHaveLength(1);
+    expect(prisma.users[0].phone).toBe(PHONE);
+    const body = await failure(confirm(first.attempt, first.code));
+    expect(body.code).toBe('EMAIL_CODE_INVALID');
+  });
+
+  it('after three people in a row only the first holds the number; the others hold none, and no two accounts share a phone value', async () => {
     const a = await typedOnly({ email: 'a@example.test' });
+    later(61);
     const b = await typedOnly({ email: 'b@example.test' });
+    later(61);
     const c = await typedOnly({ email: 'c@example.test' });
-    expect([a.phone, b.phone, c.phone]).toEqual([
-      `released:${a.id}`,
-      `released:${b.id}`,
-      PHONE,
-    ]);
+    expect(a.phone).toBe(PHONE);
+    expect(b.phone).toBe(`released:${b.id}`);
+    expect(c.phone).toBe(`released:${c.id}`);
     expect(prisma.users).toHaveLength(3);
+  });
+
+  // ── D1: a sign-up Resend refuses leaves nothing behind ──────────────────────
+
+  it('D1: when Resend refuses a sign-up, an account that typed the number keeps it and no pending row is left holding anything', async () => {
+    const holder = await typedOnly({ email: 'holder@example.test' });
+    later(61);
+    mail.failNext = true;
+    const body = await failure(
+      service.signup({ ...signup, email: 'stranger@example.test' }, IP),
+    );
+    expect(body).toMatchObject({ statusCode: 503, code: 'EMAIL_SEND_FAILED' });
+    expect(holder.phone).toBe(PHONE);
+    expect(prisma.users).toHaveLength(1);
+    expect(prisma.codes()).toHaveLength(0);
+  });
+
+  it('D1: when Resend refuses a sign-up for a number nobody holds, the pending row does not stay holding the number or the email', async () => {
+    mail.failNext = true;
+    await failure(service.signup(signup, IP));
+    expect(prisma.users).toHaveLength(0);
+    expect(prisma.codes()).toHaveLength(0);
+    // the person tries again at once and is accepted
+    const { attempt, code } = await begin();
+    expect((await confirm(attempt, code)).accessToken).toBe('a');
+  });
+
+  it('D1: a removal that fails does not change what the person is told', async () => {
+    mail.failNext = true;
+    const wawuUser = prisma.wawuUser;
+    wawuUser.deleteMany = () => Promise.reject(new Error('database is busy'));
+    const body = await failure(service.signup(signup, IP));
+    expect(body).toMatchObject({ statusCode: 503, code: 'EMAIL_SEND_FAILED' });
   });
 
   it('never takes a number that was proven, even from an account in the sign-up sequence', async () => {

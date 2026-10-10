@@ -1,17 +1,21 @@
 import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { fakePrisma, type UserRow } from '../testing/fake-signup-prisma';
 import { AuthService } from './auth.service';
 import {
   applyClashPlan,
   holdsUnprovenPhone,
+  numberHeld,
   planClashes,
+  takeProvenNumber,
   type Clash,
 } from './unproven-phone';
 
 /**
- * A phone is held only once it is proven (AUTH-07 round 2, the verifier's F1).
- * The sign-up services' behaviour is in their own specs; this holds the rule
- * itself, the one write that gives a number up, and the three places that
- * would otherwise read a number nobody proved as a way to reach its account.
+ * A phone is held only once it is proven, and changes hands only when a newer
+ * sign-up proves it (AUTH-07 rounds 2 and 3). The sign-up services' behaviour
+ * is in their own specs; this holds the rule itself, the one write that gives
+ * a number up, and the three places that would otherwise read a number nobody
+ * proved as a way to reach its account.
  */
 describe('a phone is held only once it is proven', () => {
   const EMAIL = 'new@example.test';
@@ -61,11 +65,13 @@ describe('a phone is held only once it is proven', () => {
 
   describe('planClashes', () => {
     it('plans nothing when nobody holds the email or the number', () => {
-      expect(planClashes([], EMAIL, VARIANTS)).toEqual({
+      const plan = planClashes([], EMAIL, VARIANTS);
+      expect(plan).toEqual({
         remove: [],
-        release: [],
+        typedHolders: [],
         claimEmail: false,
       });
+      expect(numberHeld(plan)).toBe(false);
     });
 
     it('removes an unconfirmed sign-up, as it always did', () => {
@@ -73,14 +79,16 @@ describe('a phone is held only once it is proven', () => {
       expect(planClashes([pending], EMAIL, VARIANTS).remove).toEqual(['a1']);
     });
 
-    it('makes an account that only typed its number give it up, in any of its written forms', () => {
+    it('takes nothing from an account that only typed its number, in any of its written forms: the new sign-up goes ahead without the number', () => {
       for (const phone of VARIANTS) {
         const typed = account({ phone, signupProgress: {} });
-        expect(planClashes([typed], EMAIL, VARIANTS)).toEqual({
+        const plan = planClashes([typed], EMAIL, VARIANTS);
+        expect(plan).toEqual({
           remove: [],
-          release: ['a1'],
+          typedHolders: ['a1'],
           claimEmail: false,
         });
+        expect(numberHeld(plan)).toBe(true);
       }
     });
 
@@ -128,64 +136,127 @@ describe('a phone is held only once it is proven', () => {
       });
       expect(planClashes([holder], EMAIL, VARIANTS)).toEqual({
         remove: [],
-        release: [],
+        typedHolders: [],
         claimEmail: true,
       });
     });
   });
 
   describe('applyClashPlan', () => {
-    function tx(updateCount: number) {
+    it('removes the unconfirmed sign-ups in the way and writes to no other account', async () => {
       const calls: Array<[string, unknown]> = [];
-      return {
-        calls,
-        client: {
-          wawuUser: {
-            deleteMany: (arg: unknown) => {
-              calls.push(['deleteMany', arg]);
-              return Promise.resolve({ count: 1 });
-            },
-            updateMany: (arg: unknown) => {
-              calls.push(['updateMany', arg]);
-              return Promise.resolve({ count: updateCount });
-            },
+      const client = {
+        wawuUser: {
+          deleteMany: (arg: unknown) => {
+            calls.push(['deleteMany', arg]);
+            return Promise.resolve({ count: 1 });
           },
-        } as never,
-      };
-    }
+          updateMany: (arg: unknown) => {
+            calls.push(['updateMany', arg]);
+            return Promise.resolve({ count: 1 });
+          },
+          update: (arg: unknown) => {
+            calls.push(['update', arg]);
+            return Promise.resolve({});
+          },
+        },
+      } as never;
+      await applyClashPlan(client, {
+        remove: ['gone'],
+        typedHolders: ['a1'],
+        claimEmail: false,
+      });
+      expect(calls).toEqual([['deleteMany', { where: { id: 'gone' } }]]);
+    });
+  });
 
-    it('gives the number up as the released marker, only while it is still unproven and still the same number', async () => {
-      const { calls, client } = tx(1);
-      await applyClashPlan(
-        client,
-        { remove: ['gone'], release: ['a1'], claimEmail: false },
-        VARIANTS,
-      );
-      expect(calls).toEqual([
-        ['deleteMany', { where: { id: 'gone' } }],
-        [
-          'updateMany',
-          {
-            where: {
-              id: 'a1',
-              phoneVerifiedAt: null,
-              phone: { in: VARIANTS },
-            },
-            data: { phone: 'released:a1' },
-          },
-        ],
-      ]);
+  describe('takeProvenNumber (a newer sign-up proved the number)', () => {
+    const row = (over: Partial<UserRow> = {}): UserRow => ({
+      id: 'a1',
+      email: 'someone@example.test',
+      phone: PHONE,
+      emailVerified: true,
+      phoneVerifiedAt: null,
+      passwordHash: 'x',
+      occupation: null,
+      accountType: null,
+      phoneVerification: null,
+      ...over,
+    });
+    const newcomer = row({
+      id: 'new',
+      email: EMAIL,
+      phone: 'released:new',
+      emailVerified: false,
     });
 
-    it('refuses the sign-up as taken when the number was proven (or changed) since it was read', async () => {
-      const { client } = tx(0);
-      await expect(
-        applyClashPlan(
-          client,
-          { remove: [], release: ['a1'], claimEmail: false },
-          VARIANTS,
-        ),
-      ).rejects.toBeInstanceOf(ConflictException);
+    function world(...others: UserRow[]) {
+      const prisma = fakePrisma();
+      prisma.users.push(...others, newcomer);
+      return prisma;
+    }
+    const take = (prisma: ReturnType<typeof fakePrisma>) =>
+      takeProvenNumber(prisma as never, 'new', VARIANTS);
+
+    it('makes an account that only typed the number give it up, in any of its written forms, and keeps everything else of it', async () => {
+      for (const phone of VARIANTS) {
+        const typed = row({ phone });
+        const prisma = world(typed);
+        prisma.progress.push('a1');
+        await take(prisma);
+        expect(typed).toMatchObject({
+          phone: 'released:a1',
+          email: 'someone@example.test',
+          emailVerified: true,
+          passwordHash: 'x',
+        });
+      }
+    });
+
+    it('removes an unconfirmed sign-up that holds the number', async () => {
+      const pending = row({
+        phoneVerification: { id: 'c1' } as never,
+        emailVerified: false,
+      });
+      const prisma = world(pending);
+      await take(prisma);
+      expect(prisma.users.map((u) => u.id)).toEqual(['new']);
+    });
+
+    it('refuses, and changes nothing, when the number is proven', async () => {
+      const proven = row({ phoneVerifiedAt: new Date() });
+      const prisma = world(proven);
+      prisma.progress.push('a1');
+      await expect(take(prisma)).rejects.toBeInstanceOf(ConflictException);
+      expect(proven.phone).toBe(PHONE);
+    });
+
+    it('refuses, and changes nothing, for a long-standing account that is not in the sign-up sequence', async () => {
+      const web = row();
+      const prisma = world(web);
+      await expect(take(prisma)).rejects.toBeInstanceOf(ConflictException);
+      expect(web.phone).toBe(PHONE);
+    });
+
+    it('refuses as taken when the number was proven or changed between the read and the write', async () => {
+      const typed = row();
+      const prisma = world(typed);
+      prisma.progress.push('a1');
+      // proven in the very moment between the lookup and the guarded write
+      const real = prisma.wawuUser.updateMany;
+      prisma.wawuUser.updateMany = (arg: never) => {
+        typed.phoneVerifiedAt = new Date();
+        return real(arg);
+      };
+      await expect(take(prisma)).rejects.toBeInstanceOf(ConflictException);
+      expect(typed.phone).toBe(PHONE);
+    });
+
+    it('never touches the account that is taking the number', async () => {
+      const prisma = world();
+      await take(prisma);
+      expect(newcomer.phone).toBe('released:new');
+      expect(prisma.users).toHaveLength(1);
     });
   });
 
@@ -206,11 +277,28 @@ describe('a phone is held only once it is proven', () => {
     const web = { ...typed, signupProgress: null };
     const proven = { ...typed, phoneVerifiedAt: new Date() };
 
+    /**
+     * As Prisma answers a lookup: a relation is on the row only when the call
+     * asks for it with `include`. A stub that handed every call the sign-up
+     * sequence would pass whether or not the guard ever loaded it (round 2's
+     * D2: five guards were held by nothing for that reason).
+     */
+    const answering = (user: Record<string, unknown> | null) =>
+      jest.fn((args?: { include?: Record<string, unknown> }) => {
+        if (!user) return Promise.resolve(null);
+        const { signupProgress, phoneVerification, ...bare } = user;
+        return Promise.resolve({
+          ...bare,
+          ...(args?.include?.phoneVerification ? { phoneVerification } : {}),
+          ...(args?.include?.signupProgress ? { signupProgress } : {}),
+        });
+      });
+
     function build(user: Record<string, unknown> | null) {
       const prisma = {
         wawuUser: {
-          findFirst: jest.fn().mockResolvedValue(user),
-          findUnique: jest.fn().mockResolvedValue(user),
+          findFirst: answering(user),
+          findUnique: answering(user),
           create: jest.fn().mockResolvedValue(user),
           update: jest.fn().mockResolvedValue(user),
         },

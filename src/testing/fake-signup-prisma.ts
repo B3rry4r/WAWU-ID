@@ -21,6 +21,9 @@ export interface CodeRow extends Row {
   signupExpiresAt: Date;
 }
 
+/** Prisma's `include`: a relation comes back only when the call asks for it. */
+type Include = Record<string, unknown> | undefined;
+
 export interface UserRow extends Row {
   id: string;
   email: string | null;
@@ -78,15 +81,28 @@ export function fakePrisma() {
       },
     },
     wawuUser: {
-      // As Prisma answers `include: { signupProgress: true }`: the row, or null.
-      findMany: ({ where }: { where: Where }) =>
+      // As Prisma answers `include`: a relation is on the row only when the
+      // call asked for it (`signupProgress` is the row or null; a call that
+      // does not ask gets no such key at all). A spec that fed every call the
+      // relation would pass whether or not the code ever asked for it.
+      findMany: ({ where, include }: { where: Where; include?: Include }) =>
         Promise.resolve(
           users
             .filter((u) => matches(u, where))
-            .map((u) => ({
-              ...u,
-              signupProgress: progress.includes(u.id) ? { userId: u.id } : null,
-            })),
+            .map((u) => {
+              const { phoneVerification, ...bare } = u;
+              return {
+                ...bare,
+                ...(include?.phoneVerification ? { phoneVerification } : {}),
+                ...(include?.signupProgress
+                  ? {
+                      signupProgress: progress.includes(u.id)
+                        ? { userId: u.id }
+                        : null,
+                    }
+                  : {}),
+              };
+            }),
         ),
       create: ({ data }: { data: Row }) => {
         const { phoneVerification, ...rest } = data as {
@@ -103,7 +119,7 @@ export function fakePrisma() {
             }),
           );
         }
-        const id = `u${++seq}`;
+        const id = (rest.id as string | undefined) ?? `u${++seq}`;
         const row = {
           id,
           emailVerified: false,
@@ -129,8 +145,10 @@ export function fakePrisma() {
       }) => {
         const row = users.find((u) => u.id === where.id) as UserRow;
         if (
-          data.email &&
-          users.some((u) => u.id !== row.id && u.email === data.email)
+          (data.email &&
+            users.some((u) => u.id !== row.id && u.email === data.email)) ||
+          (data.phone &&
+            users.some((u) => u.id !== row.id && u.phone === data.phone))
         ) {
           return Promise.reject(
             Object.assign(new Error('Unique constraint failed'), {
@@ -156,10 +174,10 @@ export function fakePrisma() {
         hit.forEach((u) => Object.assign(u, data));
         return Promise.resolve({ count: hit.length });
       },
-      deleteMany: ({ where }: { where: { id: string } }) => {
-        const at = users.findIndex((u) => u.id === where.id);
-        if (at >= 0) users.splice(at, 1);
-        return Promise.resolve({ count: at >= 0 ? 1 : 0 });
+      deleteMany: ({ where }: { where: Where }) => {
+        const gone = users.filter((u) => matches(u, where));
+        gone.forEach((u) => users.splice(users.indexOf(u), 1));
+        return Promise.resolve({ count: gone.length });
       },
     },
     phoneVerification: {

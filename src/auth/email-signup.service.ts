@@ -7,7 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { PhoneVerification, WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { createHash, randomBytes, randomInt } from 'crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'crypto';
 import { normalisePhone, phoneVariants } from '../common/phone.util';
 import { MailSendError, MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,7 +24,13 @@ import {
   type SignupStarted,
 } from './phone-signup.service';
 import { RateLimiter } from './rate-limiter.service';
-import { applyClashPlan, planClashes, SAME_ACCOUNT } from './unproven-phone';
+import { releasedPhoneFor } from './released-phone';
+import {
+  applyClashPlan,
+  numberHeld,
+  planClashes,
+  SAME_ACCOUNT,
+} from './unproven-phone';
 import {
   signupSequenceConfig,
   type SignupSequenceConfig,
@@ -48,6 +54,12 @@ export type EmailSignupStarted = Omit<SignupStarted, 'emailCodeRequired'> & {
   channel: 'email';
   /** Where the code went, written so a bystander cannot use it: a•••@example.com. */
   maskedEmail: string;
+  /**
+   * Present (true) only when the number typed was NOT saved to this account
+   * because another account holds it (an account that only typed it). The
+   * account is made without a phone; the person adds and proves one later.
+   */
+  phoneNotSaved?: true;
 };
 
 const WRONG_CODE = () =>
@@ -177,26 +189,35 @@ export class EmailSignupService {
     const attempt = randomBytes(32).toString('base64url');
     const now = new Date();
     const variants = phoneVariants(phone);
+    const id = randomUUID();
     let claim = false;
+    let held = false;
 
     try {
       await this.prisma.$transaction(async (tx) => {
         claim = false;
+        held = false;
         const clashes = await tx.wawuUser.findMany({
           where: { OR: [{ email }, { phone: { in: variants } }] },
           include: { phoneVerification: true, signupProgress: true },
         });
         // What is in the way is decided first and changed after, so a sign-up
-        // refused for one clash gives nothing up for another. A number nobody
-        // has proven does not stand in the way (see unproven-phone.ts).
+        // refused for one clash changes nothing for another. A mailed sign-up
+        // proves no number, so it never takes one from an account that only
+        // typed it: it goes ahead without the number (see unproven-phone.ts).
         const plan = planClashes(clashes, email, variants);
         claim = plan.claimEmail;
-        await applyClashPlan(tx, plan, variants);
+        held = numberHeld(plan);
+        await applyClashPlan(tx, plan);
 
         await tx.wawuUser.create({
           data: {
+            id,
             email: claim ? null : email,
-            phone,
+            // The sign-up row below keeps the number typed, so the next calls
+            // find this sign-up by it; the account holds it only when nobody
+            // else does.
+            phone: held ? releasedPhoneFor(id) : phone,
             passwordHash,
             occupation: dto.occupation?.trim() || null,
             accountType: dto.accountType ?? null,
@@ -238,6 +259,9 @@ export class EmailSignupService {
       // Nothing was delivered: the mail is given back and the person may ask again at once.
       await giveBack();
       await this.limits.forget('signup-mail-gap', email);
+      // The secret was never handed out, so nobody can confirm this sign-up:
+      // it is removed, and no pending row is left holding a number or an email.
+      await this.discard(id);
       throw problem(
         503,
         'EMAIL_SEND_FAILED',
@@ -249,6 +273,7 @@ export class EmailSignupService {
       attempt,
       emailCodeRequired: false,
       maskedEmail: maskEmail(email),
+      ...(held ? { phoneNotSaved: true as const } : {}),
     };
   }
 
@@ -495,6 +520,10 @@ export class EmailSignupService {
       accountType: pending.user.accountType ?? null,
       channel: 'email',
       maskedEmail: maskEmail(addressOf(pending)),
+      // The account was made without the number typed (another account holds it).
+      ...(pending.user.phone !== pending.phone
+        ? { phoneNotSaved: true as const }
+        : {}),
     };
   }
 
@@ -615,6 +644,24 @@ export class EmailSignupService {
       return null;
     }
     return row;
+  }
+
+  /**
+   * Removes a sign-up whose mail was refused. Only a row that nobody has
+   * confirmed is touched, and only by its own id; if the removal itself fails
+   * the person is still told the mail was refused, and the row is the kind a
+   * newer sign-up replaces anyway.
+   */
+  private async discard(userId: string): Promise<void> {
+    try {
+      await this.prisma.wawuUser.deleteMany({
+        where: { id: userId, emailVerified: false, phoneVerifiedAt: null },
+      });
+    } catch (err) {
+      this.logger.error(
+        `A sign-up whose code was not mailed could not be removed: ${String(err)}`,
+      );
+    }
   }
 
   /** The code goes by mail, and a mail that was not handed over is an error, never a quiet "sent". */

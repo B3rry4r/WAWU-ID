@@ -41,6 +41,7 @@ describe('the published contract (contract/openapi.json)', () => {
         'POST /auth/signup',
         'POST /auth/phone/verify/start',
         'POST /auth/phone/verify/confirm',
+        'GET /auth/signup/channel',
         'POST /auth/signup/resume',
         'POST /auth/signup/email-code/start',
         'POST /auth/signup/email-code/confirm',

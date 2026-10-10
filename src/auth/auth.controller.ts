@@ -66,7 +66,7 @@ export class AuthController {
   @ApiOperation({
     operationId: 'signup',
     summary:
-      'A3: create the account and send a 6-digit code: texted to the phone by default, mailed to the email when SIGNUP_VERIFY_CHANNEL is email (R-39; the answer then carries `channel: email`). No session yet (R-36).',
+      'A3: create the account and send a 6-digit code: texted to the phone by default, mailed to the email when SIGNUP_VERIFY_CHANNEL is email (R-39; the answer then carries `channel: email`). No session yet (R-36). A number another account only typed is not taken from it by a sign-up that proves nothing: a mailed sign-up goes ahead without the number (`phoneNotSaved: true`), and a texted one takes it when its code proves it.',
   })
   @ApiBody({ type: SignupDto })
   @ApiResponse({ status: 201, type: SignupStartedAnswer })

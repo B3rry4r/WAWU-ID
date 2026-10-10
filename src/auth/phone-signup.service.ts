@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { PhoneVerification, WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { createHash, randomBytes, randomInt } from 'crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'crypto';
 import { normalisePhone, phoneVariants } from '../common/phone.util';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,7 +21,14 @@ import {
   type PhoneVerificationConfig,
 } from './phone-verification.config';
 import { RateLimiter } from './rate-limiter.service';
-import { applyClashPlan, planClashes, SAME_ACCOUNT } from './unproven-phone';
+import { releasedPhoneFor } from './released-phone';
+import {
+  applyClashPlan,
+  numberHeld,
+  planClashes,
+  SAME_ACCOUNT,
+  takeProvenNumber,
+} from './unproven-phone';
 import {
   signupSequenceConfig,
   type SignupSequenceConfig,
@@ -65,6 +72,11 @@ export type SignupResume =
       channel?: 'email';
       /** With `channel: 'email'`: where the code went, written a•••@example.com. */
       maskedEmail?: string;
+      /**
+       * With `channel: 'email'`: true when the account was made without the
+       * number typed, because another account holds it (AUTH-07 round 3).
+       */
+      phoneNotSaved?: true;
     }
   | { step: 'details' };
 
@@ -214,6 +226,7 @@ export class PhoneSignupService {
     const emailCodeHash = await argon2.hash(emailCode);
     const now = new Date();
     const variants = phoneVariants(phone);
+    const id = randomUUID();
     let claim = false;
 
     try {
@@ -224,16 +237,21 @@ export class PhoneSignupService {
           include: { phoneVerification: true, signupProgress: true },
         });
         // What is in the way is decided first and changed after, so a sign-up
-        // refused for one clash gives nothing up for another. A number nobody
-        // has proven does not stand in the way (see unproven-phone.ts).
+        // refused for one clash changes nothing for another. A number an
+        // account only typed is not taken here: this sign-up holds none yet,
+        // and takes it if its person proves it by the code texted to it (see
+        // confirm, and unproven-phone.ts).
         const plan = planClashes(clashes, email, variants);
         claim = plan.claimEmail;
-        await applyClashPlan(tx, plan, variants);
+        await applyClashPlan(tx, plan);
 
         await tx.wawuUser.create({
           data: {
+            id,
             email: claim ? null : email,
-            phone,
+            // The sign-up row below keeps the number typed; the account holds
+            // it from the moment the code proves it when somebody else does now.
+            phone: numberHeld(plan) ? releasedPhoneFor(id) : phone,
             passwordHash,
             occupation: dto.occupation?.trim() || null,
             accountType: dto.accountType ?? null,
@@ -452,10 +470,19 @@ export class PhoneSignupService {
             data: { email: null },
           });
         }
+        // This sign-up was made without its number because an account that only
+        // typed it held it. The right code proves the number, so it changes
+        // hands now, here and nowhere earlier: that account keeps everything
+        // but the number.
+        const takesNumber = pending.user.phone !== pending.phone;
+        if (takesNumber) {
+          await takeProvenNumber(tx, pending.userId, phoneVariants(phone));
+        }
         return tx.wawuUser.update({
           where: { id: pending.userId },
           data: {
             phoneVerifiedAt: new Date(),
+            ...(takesNumber ? { phone: pending.phone } : {}),
             ...(pending.claimEmail ? { email: pending.claimEmail } : {}),
           },
         });
