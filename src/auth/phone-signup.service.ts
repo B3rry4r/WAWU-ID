@@ -462,10 +462,10 @@ export class PhoneSignupService {
         return tx.wawuUser.update({
           where: { id: pending.userId },
           data: {
-            phoneVerifiedAt: new Date(),
             // The number the code went to: the token vouches for the phone
             // only while the account still holds it (JOIN-03 round 2, D1).
             phoneVerifiedFor: pending.phone,
+            phoneVerifiedAt: new Date(),
             ...(pending.claimEmail ? { email: pending.claimEmail } : {}),
           },
         });
