@@ -19,7 +19,13 @@ export interface PhoneProofFields {
 }
 
 export function phoneIsProven(user: PhoneProofFields): boolean {
-  if (user.phoneVerifiedAt === null || user.phoneVerifiedFor === null) {
+  // A row that carries no proof, or no phone, proves nothing: `null` is the
+  // column's own answer, anything that is not text is a row read half-way.
+  if (
+    !user.phoneVerifiedAt ||
+    typeof user.phoneVerifiedFor !== 'string' ||
+    typeof user.phone !== 'string'
+  ) {
     return false;
   }
   if (user.phoneVerifiedFor === user.phone) return true;

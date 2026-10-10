@@ -145,6 +145,20 @@ describe('the access token says which contact is proven (JOIN-03)', () => {
       ).toMatchObject({ phoneVerified: false });
     });
 
+    it('a row read without the column, or without a phone, proves nothing and never throws', () => {
+      const bare = (over: Record<string, unknown>) =>
+        payload(user({ phoneVerifiedAt: new Date(), ...over } as never));
+      expect(bare({ phoneVerifiedFor: undefined })).toMatchObject({
+        phoneVerified: false,
+      });
+      expect(
+        bare({ phoneVerifiedFor: undefined, phone: undefined }),
+      ).toMatchObject({ phoneVerified: false });
+      expect(
+        bare({ phoneVerifiedFor: '+2348031234567', phone: undefined }),
+      ).toMatchObject({ phoneVerified: false });
+    });
+
     it('a released or deleted marker never matches the number it replaced', () => {
       expect(payload(user({ ...proven, phone: 'released:u1' }))).toMatchObject({
         phone: '',
