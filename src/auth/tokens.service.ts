@@ -56,6 +56,16 @@ export interface AccessTokenPayload {
    * not this claim.
    */
   verification: VerificationState;
+  /**
+   * Whether the account has PROVEN `email` / `phone` to WAWU ID. The claims
+   * `email` and `phone` are always there, proven or not: a web sign-up types
+   * both, a mobile sign-up proves one (the phone by SMS, or the email by the
+   * mailed code since AUTH-07). A resource server that must know a contact is
+   * the person's (the Hub's event-registration claim, JOIN-03) reads these two
+   * and never trusts a typed address. A SNAPSHOT, like `verification`.
+   */
+  emailVerified: boolean;
+  phoneVerified: boolean;
   status: string;
   platformRefs: {
     wawuafricaAppUserId: number | null;
@@ -96,6 +106,8 @@ export class TokensService {
       verificationTier: user.verificationTier,
       trustScore: user.trustScore,
       verification: deriveVerification(user),
+      emailVerified: user.email !== null && user.emailVerified,
+      phoneVerified: user.phoneVerifiedAt !== null,
       status: user.status,
       platformRefs: {
         wawuafricaAppUserId: user.wawuafricaAppUserId,

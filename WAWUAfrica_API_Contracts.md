@@ -425,6 +425,16 @@ claims. The legacy `verificationTier` and `trustScore` fields stay on the wire
 unchanged so an older Hub build keeps parsing these responses while both sides
 deploy.
 
+The access token also carries two booleans that say which contact WAWU ID has
+PROVEN (JOIN-03): `emailVerified` is true only when the account has an email and
+`email_verified` is set, and `phoneVerified` is true only when `phone_verified_at`
+is set. The `email` and `phone` claims are always present, proven or not (a web
+sign-up types both), so a resource server that must know a contact is the
+person's reads these two and never trusts a typed address. A released phone
+(`released:<id>`, `phone_verified_at` empty) is `phoneVerified: false` and its
+`phone` claim is an empty string. Both are additive claims and a snapshot, like
+`verification`: the token lives 15 minutes.
+
 ### INTERNAL — PATCH /internal/users/:wawuId/trust-score
 Header: `X-Service-Key: <secret>`
 
