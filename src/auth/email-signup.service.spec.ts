@@ -868,6 +868,38 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
     expect((await confirm(attempt, code)).accessToken).toBe('a');
   });
 
+  it('D4: when Resend refuses a sign-up, the other unconfirmed sign-ups waiting for their code stay, and one of them still confirms', async () => {
+    const first = await begin({
+      email: 'first@example.test',
+      phone: '08031234401',
+    });
+    const second = await begin({
+      email: 'second@example.test',
+      phone: '08031234402',
+    });
+    mail.failNext = true;
+    const body = await failure(
+      service.signup(
+        { ...signup, email: 'third@example.test', phone: '08031234403' },
+        IP,
+      ),
+    );
+    expect(body).toMatchObject({ statusCode: 503, code: 'EMAIL_SEND_FAILED' });
+    // only the refused sign-up is gone, with its row; the two before it are untouched
+    expect(prisma.users.map((u) => u.email)).toEqual([
+      'first@example.test',
+      'second@example.test',
+    ]);
+    expect(prisma.codes()).toHaveLength(2);
+    expect(
+      (await confirm(first.attempt, first.code, '+2348031234401')).accessToken,
+    ).toBe('a');
+    expect(
+      (await confirm(second.attempt, second.code, '+2348031234402'))
+        .accessToken,
+    ).toBe('a');
+  });
+
   it('D1: a removal that fails does not change what the person is told', async () => {
     mail.failNext = true;
     const wawuUser = prisma.wawuUser;
