@@ -358,11 +358,18 @@ export class MailService {
     ];
 
     parts.push(heading('What was checked'));
+    // A night that did not finish gives every check the same note: say it once.
+    const first = report.checks[0]?.note ?? null;
+    const same =
+      first !== null &&
+      report.checks.length > 1 &&
+      report.checks.every((c) => c.note === first);
+    if (same) parts.push(line(muted(first)));
     for (const c of report.checks) {
       parts.push(
         line(
           `${strong(labelOf(c.id))}: ${e(STATE_LABELS[c.state])}. ${c.checked} compared, ${c.found} found.` +
-            (c.note ? ` ${muted(c.note)}` : ''),
+            (c.note && !same ? ` ${muted(c.note)}` : ''),
         ),
       );
     }

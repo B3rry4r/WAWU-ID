@@ -315,12 +315,60 @@ describe('POST /internal/users/:userId/money-check-report', () => {
       expect(sent[0].html).toContain('NGN -50.00 against NGN -1.00');
     });
 
+    it('says the same note of every check once, and a different note on its own check', async () => {
+      const note =
+        'The run did not finish. The run stopped before it finished and was not made again. (run_died).';
+      const same = hubBody();
+      same.checks = same.checks.map((c) => ({ ...c, note }));
+      await post(OWNER, same).expect(200);
+      expect(sent[0].html.split(note).length - 1).toBe(1);
+      sent = [];
+      const differ = hubBody();
+      differ.checks[0].note = 'Only the first.';
+      await post(OWNER, differ).expect(200);
+      expect(sent[0].html.split('Only the first.').length - 1).toBe(1);
+      expect(sent[0].html).toContain(
+        '1 wallets could not be read and 0 kept moving while they were read.',
+      );
+    });
+
+    it('writes the notices the Hub sends in plain words', async () => {
+      await post(
+        OWNER,
+        hubBody({
+          notices: {
+            too_new_to_judge: { count: 2 },
+            provider_charges_to_wawu: { count: 1, amountKobo: '500' },
+            provider_pending_not_in_ledger: { count: 3, amountKobo: '1500' },
+            provider_failed_not_in_ledger: { count: 1, amountKobo: '100' },
+            payments_differ_from_quote: { count: 1 },
+          },
+        }),
+      ).expect(200);
+      const html = sent[0].html;
+      expect(html).toContain(
+        '2 movements were too new to judge. They are checked tomorrow.',
+      );
+      expect(html).toContain(
+        '1 charge the provider made to WAWU itself, NGN 5.00 in all.',
+      );
+      expect(html).toContain(
+        '3 pending records at the provider that the ledger does not have, NGN 15.00 in all. No money moved.',
+      );
+      expect(html).toContain(
+        '1 failed record at the provider that the ledger does not have, NGN 1.00 in all. No money moved.',
+      );
+      expect(html).toContain(
+        '1 completed payment came to a different total than the quote.',
+      );
+    });
+
     it('names a notice it has no sentence for by its name and count', async () => {
       await post(
         OWNER,
-        hubBody({ notices: { a_new_notice: { count: 4 } } }),
+        hubBody({ notices: { a_new_notice_2: { count: 4 } } }),
       ).expect(200);
-      expect(sent[0].html).toContain('A new notice: 4.');
+      expect(sent[0].html).toContain('A new notice 2: 4.');
     });
   });
 

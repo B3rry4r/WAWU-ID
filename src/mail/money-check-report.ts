@@ -89,7 +89,7 @@ const MAX_COUNT = 1_000_000_000;
 
 /** A plain sentence: no link, address, symbol or em-dash can be written in it. */
 const SENTENCE = /^[A-Za-z0-9 .,:;'"()_-]+$/;
-const WORD = /^[a-z][a-z_]{0,59}$/;
+const WORD = /^[a-z][a-z0-9_]{0,59}$/;
 const REF = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 const NIGHT = /^\d{4}-\d{2}-\d{2}$/;
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
@@ -374,15 +374,28 @@ export function labelOf(id: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
+const plural = (n: number, one: string, many: string): string =>
+  n === 1 ? one : many;
+
 const NOTICE_SENTENCES: Record<string, (n: ReportNotice) => string> = {
   wallets_opened_during_run: (n) =>
-    `${n.count} ${n.count === 1 ? 'wallet was' : 'wallets were'} opened while the check ran. ${n.count === 1 ? 'It is' : 'They are'} checked tomorrow.`,
+    `${n.count} ${plural(n.count, 'wallet was', 'wallets were')} opened while the check ran. ${plural(n.count, 'It is', 'They are')} checked tomorrow.`,
   balance_booked_differs: (n) =>
-    `${n.count} ${n.count === 1 ? 'wallet has' : 'wallets have'} a booked balance that is not the available one.`,
+    `${n.count} ${plural(n.count, 'wallet has', 'wallets have')} a booked balance that is not the available one.`,
   ledger_accounts_without_wallet: (n) =>
-    `${n.count} ${n.count === 1 ? 'account has' : 'accounts have'} ledger rows and no wallet.`,
+    `${n.count} ${plural(n.count, 'account has', 'accounts have')} ledger rows and no wallet.`,
   holds_waiting_for_payee_wallet: (n) =>
-    `${n.count} ${n.count === 1 ? 'hold waits' : 'holds wait'} for a creator to open a wallet${n.amountKobo ? `, ${nairaOf(n.amountKobo)} in all` : ''}.`,
+    `${n.count} ${plural(n.count, 'hold waits', 'holds wait')} for a creator to open a wallet${n.amountKobo ? `, ${nairaOf(n.amountKobo)} in all` : ''}.`,
+  too_new_to_judge: (n) =>
+    `${n.count} ${plural(n.count, 'movement was', 'movements were')} too new to judge. ${plural(n.count, 'It is', 'They are')} checked tomorrow.`,
+  provider_charges_to_wawu: (n) =>
+    `${n.count} ${plural(n.count, 'charge', 'charges')} the provider made to WAWU itself${n.amountKobo ? `, ${nairaOf(n.amountKobo)} in all` : ''}.`,
+  provider_pending_not_in_ledger: (n) =>
+    `${n.count} pending ${plural(n.count, 'record', 'records')} at the provider that the ledger does not have${n.amountKobo ? `, ${nairaOf(n.amountKobo)} in all` : ''}. No money moved.`,
+  provider_failed_not_in_ledger: (n) =>
+    `${n.count} failed ${plural(n.count, 'record', 'records')} at the provider that the ledger does not have${n.amountKobo ? `, ${nairaOf(n.amountKobo)} in all` : ''}. No money moved.`,
+  payments_differ_from_quote: (n) =>
+    `${n.count} completed ${plural(n.count, 'payment', 'payments')} came to a different total than the quote.`,
 };
 
 /** One line for a notice: a known one in plain words, any other by name and count. */
