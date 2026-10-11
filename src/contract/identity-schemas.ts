@@ -143,23 +143,67 @@ export class PhoneCodeSentAnswer {
   data!: PhoneCodeSentSchema;
 }
 
+export class EmailSignupCodeSentSchema extends PhoneCodeSentSchema {
+  @ApiProperty({ enum: ['email'] })
+  channel!: 'email';
+}
+
+export class EmailSignupCodeSentAnswer {
+  @ApiProperty({ type: EmailSignupCodeSentSchema })
+  data!: EmailSignupCodeSentSchema;
+}
+
 export class SignupStartedSchema extends PhoneCodeSentSchema {
   @ApiProperty({
     description:
-      'Shown once. Keep it with the sign-up (it survives the app closing) and send it on every phone/verify and resume call.',
+      'Shown once. Keep it with the sign-up (it survives the app closing) and send it on every code and resume call.',
   })
   attempt!: string;
 
   @ApiProperty({
     description:
-      'The confirm call must also carry `emailCode`, the code mailed to the email.',
+      'Texted sign-up only: the confirm call must also carry `emailCode`, the code mailed to the email. Always false when the code was mailed.',
   })
   emailCodeRequired!: boolean;
+
+  @ApiPropertyOptional({
+    enum: ['email'],
+    description:
+      '`email`: the code was mailed (`SIGNUP_VERIFY_CHANNEL=email`, DECISIONS R-39): send it to `signup/email-code/*`. Absent: the code was texted (the default): `phone/verify/*`.',
+  })
+  channel?: 'email';
+
+  @ApiPropertyOptional({
+    description:
+      'With `channel: email`: where the code went, written a•••@example.com. Show it on A4.',
+  })
+  maskedEmail?: string;
+
+  @ApiPropertyOptional({
+    enum: [true],
+    description:
+      'With `channel: email`, present (true) only when the phone number typed was NOT saved to the account because another account holds it. The account is made without a phone; say so on A4 in plain words. The person adds and proves a phone later (BACKEND_GAPS G-222).',
+  })
+  phoneNotSaved?: true;
 }
 
 export class SignupStartedAnswer {
   @ApiProperty({ type: SignupStartedSchema })
   data!: SignupStartedSchema;
+}
+
+export class SignupChannelSchema {
+  @ApiProperty({
+    enum: ['phone', 'email'],
+    description:
+      'Where the sign-up code will go: `phone` (texted, the default) or `email` (mailed). It is the SIGNUP_VERIFY_CHANNEL setting as WAWU ID reads it. A3 words its line by it; A4 then names the channel the sign-up answer carries.',
+  })
+  channel!: 'phone' | 'email';
+}
+
+export class SignupChannelAnswer {
+  @ApiProperty({ type: SignupChannelSchema })
+  data!: SignupChannelSchema;
 }
 
 export class SignupResumeSchema {
@@ -195,6 +239,26 @@ export class SignupResumeSchema {
     description: 'With `phone`: the account type sent with the sign-up.',
   })
   accountType?: 'user' | 'creator' | null;
+
+  @ApiPropertyOptional({
+    enum: ['email'],
+    description:
+      'With `phone`: `email` when the code was mailed (use `signup/email-code/*`); absent when it was texted. The step is named `phone` whichever way the code travels.',
+  })
+  channel?: 'email';
+
+  @ApiPropertyOptional({
+    description:
+      'With `channel: email`: where the code went, written a•••@example.com.',
+  })
+  maskedEmail?: string;
+
+  @ApiPropertyOptional({
+    enum: [true],
+    description:
+      'With `channel: email`, present (true) only when the account was made without the phone number typed, because another account holds it. Say so on A4, as the sign-up answer did.',
+  })
+  phoneNotSaved?: true;
 }
 
 export class SignupResumeAnswer {
@@ -273,6 +337,10 @@ export const ERROR_CODES = [
   'EMAIL_CODE_INVALID',
   'EMAIL_CODE_LOCKED',
   'EMAIL_CODE_RESEND_TOO_SOON',
+  'EMAIL_ALREADY_CONFIRMED',
+  'EMAIL_NOT_CONFIGURED',
+  'EMAIL_SEND_FAILED',
+  'SIGNUP_CHANNEL_DISABLED',
   'CURRENT_PASSWORD_WRONG',
   'PASSWORD_UNCHANGED',
   'PASSWORD_NOT_SET',

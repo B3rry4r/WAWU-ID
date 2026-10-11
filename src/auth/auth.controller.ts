@@ -40,7 +40,7 @@ import { RefreshDto } from './dto/refresh.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { SignupDto } from './dto/signup.dto';
-import { PhoneSignupService } from './phone-signup.service';
+import { SignupChannelService } from './signup-channel.service';
 import { SessionReader } from './session-reader';
 import { SessionSecurityService } from './session-security.service';
 
@@ -48,7 +48,7 @@ import { SessionSecurityService } from './session-security.service';
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
-    private readonly phoneSignup: PhoneSignupService,
+    private readonly signupChannel: SignupChannelService,
     private readonly session: SessionReader,
     private readonly security: SessionSecurityService,
   ) {}
@@ -59,14 +59,14 @@ export class AuthController {
     return { data: await this.auth.register(dto) };
   }
 
-  /** Mobile sign-up: creates the account and texts a code. No session yet. */
+  /** Mobile sign-up: creates the account and sends a code (texted by default, mailed with SIGNUP_VERIFY_CHANNEL=email). No session yet. */
   @Post('signup')
   @HttpCode(HttpStatus.CREATED)
   @ApiTags('app')
   @ApiOperation({
     operationId: 'signup',
     summary:
-      'A3: create the account and text a code to the phone. No session yet (R-36).',
+      'A3: create the account and send a 6-digit code: texted to the phone by default, mailed to the email when SIGNUP_VERIFY_CHANNEL is email (R-39; the answer then carries `channel: email`). No session yet (R-36). A number another account only typed is not taken from it by a sign-up that proves nothing: a mailed sign-up goes ahead without the number (`phoneNotSaved: true`), and a texted one takes it when its code proves it.',
   })
   @ApiBody({ type: SignupDto })
   @ApiResponse({ status: 201, type: SignupStartedAnswer })
@@ -83,15 +83,17 @@ export class AuthController {
   @ApiResponse({
     status: 429,
     type: ErrorBody,
-    description: 'PHONE_CODE_RESEND_TOO_SOON, RATE_LIMITED.',
+    description:
+      'PHONE_CODE_RESEND_TOO_SOON (texted), EMAIL_CODE_RESEND_TOO_SOON (mailed), RATE_LIMITED.',
   })
   @ApiResponse({
     status: 503,
     type: ErrorBody,
-    description: 'SMS_NOT_CONFIGURED, SMS_SEND_FAILED.',
+    description:
+      'SMS_NOT_CONFIGURED, SMS_SEND_FAILED (texted); EMAIL_NOT_CONFIGURED, EMAIL_SEND_FAILED (mailed).',
   })
   async signup(@Body() dto: SignupDto, @Req() req: Request) {
-    return { data: await this.phoneSignup.signup(dto, clientAddress(req)) };
+    return { data: await this.signupChannel.signup(dto, clientAddress(req)) };
   }
 
   @Post('phone/verify/start')
@@ -100,7 +102,7 @@ export class AuthController {
   @ApiOperation({
     operationId: 'phoneVerifyStart',
     summary:
-      'A4: send another code. The same answer for any number and secret; only a live sign-up is texted.',
+      'A4 (texted sign-up): send another code. The same answer for any number and secret; only a live sign-up is texted. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are mailed.',
   })
   @ApiBody({ type: PhoneVerifyStartDto })
   @ApiResponse({ status: 200, type: PhoneCodeSentAnswer })
@@ -108,6 +110,11 @@ export class AuthController {
     status: 400,
     type: ErrorBody,
     description: 'Validation, PHONE_INVALID, PHONE_NOT_SUPPORTED.',
+  })
+  @ApiResponse({
+    status: 409,
+    type: ErrorBody,
+    description: 'SIGNUP_CHANNEL_DISABLED.',
   })
   @ApiResponse({
     status: 429,
@@ -124,7 +131,7 @@ export class AuthController {
     @Req() req: Request,
   ) {
     return {
-      data: await this.phoneSignup.start(
+      data: await this.signupChannel.phoneStart(
         dto.phone,
         dto.attempt,
         clientAddress(req),
@@ -138,7 +145,7 @@ export class AuthController {
   @ApiOperation({
     operationId: 'phoneVerifyConfirm',
     summary:
-      'A4: check the texted code (and the mailed one when sign-up asked for it). Right: the first session.',
+      'A4 (texted sign-up): check the texted code (and the mailed one when sign-up asked for it). Right: the first session. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are mailed.',
   })
   @ApiBody({ type: PhoneVerifyConfirmDto })
   @ApiResponse({ status: 200, type: SessionAnswer })
@@ -152,7 +159,7 @@ export class AuthController {
     status: 409,
     type: ErrorBody,
     description:
-      'PHONE_ALREADY_CONFIRMED, or the email or phone was taken meanwhile.',
+      'PHONE_ALREADY_CONFIRMED, SIGNUP_CHANNEL_DISABLED, or the email or phone was taken meanwhile.',
   })
   @ApiResponse({
     status: 429,
@@ -164,7 +171,7 @@ export class AuthController {
     @Req() req: Request,
   ) {
     return {
-      data: await this.phoneSignup.confirm(
+      data: await this.signupChannel.phoneConfirm(
         dto.phone,
         dto.attempt,
         dto.code,

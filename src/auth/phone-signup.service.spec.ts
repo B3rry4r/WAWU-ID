@@ -1,6 +1,11 @@
 import { HttpException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { MemoryRateLimiter } from '../testing/memory-rate-limiter';
+import {
+  fakePrisma,
+  type Row,
+  type UserRow,
+} from '../testing/fake-signup-prisma';
 import { RecordingSmsProvider } from '../testing/recording-sms.provider';
 import { AuthService } from './auth.service';
 import {
@@ -26,171 +31,6 @@ const DATE_ONLY = [
   'setTimeout',
   'clearTimeout',
 ] as const;
-
-type Row = Record<string, unknown>;
-
-interface CodeRow extends Row {
-  id: string;
-  userId: string;
-  phone: string;
-  codeHash: string;
-  attemptHash: string;
-  claimEmail: string | null;
-  emailCodeHash: string | null;
-  expiresAt: Date;
-  lastSentAt: Date;
-  signupExpiresAt: Date;
-}
-
-interface UserRow extends Row {
-  id: string;
-  email: string | null;
-  phone: string;
-  emailVerified: boolean;
-  phoneVerifiedAt: Date | null;
-  passwordHash: string | null;
-  occupation: string | null;
-  accountType: string | null;
-  phoneVerification: CodeRow | null;
-}
-
-type Where = Record<string, unknown>;
-
-/** A Prisma `where` over plain rows: equality, `in`, `not` and `OR`. */
-function matches(row: Row, where: Where): boolean {
-  return Object.entries(where).every(([key, want]) => {
-    if (key === 'OR') return (want as Where[]).some((w) => matches(row, w));
-    const have = row[key];
-    if (want && typeof want === 'object' && 'in' in want) {
-      return (want.in as unknown[]).includes(have);
-    }
-    if (want && typeof want === 'object' && 'not' in want) {
-      return have !== want.not;
-    }
-    return have === want;
-  });
-}
-
-/** The few Prisma calls the service makes, over one array of users. */
-function fakePrisma() {
-  const users: UserRow[] = [];
-  let seq = 0;
-  const codes = () =>
-    users.flatMap((u) => (u.phoneVerification ? [u.phoneVerification] : []));
-
-  const api = {
-    users,
-    codes,
-    wawuUser: {
-      findMany: ({ where }: { where: Where }) =>
-        Promise.resolve(users.filter((u) => matches(u, where))),
-      create: ({ data }: { data: Row }) => {
-        const { phoneVerification, ...rest } = data as {
-          phoneVerification?: { create: Partial<CodeRow> };
-        } & Row;
-        const taken = users.some(
-          (u) =>
-            (rest.email && u.email === rest.email) || u.phone === rest.phone,
-        );
-        if (taken) {
-          return Promise.reject(
-            Object.assign(new Error('Unique constraint failed'), {
-              code: 'P2002',
-            }),
-          );
-        }
-        const id = `u${++seq}`;
-        const row = {
-          id,
-          emailVerified: false,
-          phoneVerifiedAt: null,
-          ...rest,
-          phoneVerification: phoneVerification
-            ? ({
-                id: `c${++seq}`,
-                userId: id,
-                ...phoneVerification.create,
-              } as CodeRow)
-            : null,
-        } as UserRow;
-        users.push(row);
-        return Promise.resolve(row);
-      },
-      update: ({
-        where,
-        data,
-      }: {
-        where: { id: string };
-        data: Partial<UserRow>;
-      }) => {
-        const row = users.find((u) => u.id === where.id) as UserRow;
-        if (
-          data.email &&
-          users.some((u) => u.id !== row.id && u.email === data.email)
-        ) {
-          return Promise.reject(
-            Object.assign(new Error('Unique constraint failed'), {
-              code: 'P2002',
-            }),
-          );
-        }
-        Object.assign(row, data);
-        return Promise.resolve(row);
-      },
-      updateMany: ({
-        where,
-        data,
-      }: {
-        where: Where;
-        data: Partial<UserRow>;
-      }) => {
-        const hit = users.filter(
-          (u) =>
-            matches(u, where) &&
-            u.id !== (where.id as { not: string } | undefined)?.not,
-        );
-        hit.forEach((u) => Object.assign(u, data));
-        return Promise.resolve({ count: hit.length });
-      },
-      deleteMany: ({ where }: { where: { id: string } }) => {
-        const at = users.findIndex((u) => u.id === where.id);
-        if (at >= 0) users.splice(at, 1);
-        return Promise.resolve({ count: at >= 0 ? 1 : 0 });
-      },
-    },
-    phoneVerification: {
-      findUnique: ({ where }: { where: { attemptHash: string } }) => {
-        const owner = users.find(
-          (u) => u.phoneVerification?.attemptHash === where.attemptHash,
-        );
-        return Promise.resolve(
-          owner?.phoneVerification
-            ? { ...owner.phoneVerification, user: owner }
-            : null,
-        );
-      },
-      update: ({
-        where,
-        data,
-      }: {
-        where: { id: string };
-        data: Partial<CodeRow>;
-      }) => {
-        const row = codes().find((c) => c.id === where.id) as CodeRow;
-        Object.assign(row, data);
-        return Promise.resolve(row);
-      },
-      deleteMany: ({ where }: { where: { id: string } }) => {
-        const owner = users.find((u) => u.phoneVerification?.id === where.id);
-        if (!owner) return Promise.resolve({ count: 0 });
-        owner.phoneVerification = null;
-        return Promise.resolve({ count: 1 });
-      },
-    },
-    $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(api),
-  };
-  return api;
-}
 
 describe('PhoneSignupService', () => {
   let prisma: ReturnType<typeof fakePrisma>;
@@ -701,6 +541,128 @@ describe('PhoneSignupService', () => {
     );
     expect(body.statusCode).toBe(409);
     expect(prisma.users).toHaveLength(1);
+  });
+
+  // ── a number an account only typed changes hands when a sign-up PROVES it ───
+
+  /** An account that finished a MAILED sign-up: its email is proven, its number only typed. */
+  function typedAccount() {
+    prisma.users.push(
+      legacy({
+        id: 'typed',
+        email: 'typed@example.test',
+        phone: PHONE,
+        phoneVerifiedAt: null,
+      }),
+    );
+    prisma.progress.push('typed');
+    return prisma.users[0];
+  }
+
+  it('does not take the number when the sign-up is made: that account keeps it, this one holds none yet, and the code still goes to the number typed', async () => {
+    const typed = typedAccount();
+    const before = { ...typed };
+    const { out } = await begin({ email: 'owner@example.test' });
+
+    expect(typed).toEqual(before);
+    const mine = prisma.users.find((u) => u.email === 'owner@example.test');
+    expect(mine?.phone).toBe(`released:${mine?.id}`);
+    // the answer is the one a plain sign-up gives, byte for byte in its shape
+    expect(Object.keys(out).sort()).toEqual([
+      'attempt',
+      'emailCodeRequired',
+      'expiresIn',
+      'phone',
+      'resendIn',
+    ]);
+    expect(out.phone).toBe(PHONE);
+    expect(sms.sent).toHaveLength(1);
+    expect(sms.sent[0].to).toBe(PHONE);
+  });
+
+  it('takes the number only when the text proves it: then the older account keeps everything but the number (AUTH-07 round 3: F-A closed, the round 1 attack closed under texted sign-up)', async () => {
+    const typed = typedAccount();
+    const { attempt, code } = await begin({ email: 'owner@example.test' });
+
+    // a wrong code proves nothing, so nothing moves
+    const wrong = await failure(confirm(attempt, wrongCode(code)));
+    expect(wrong.code).toBe('PHONE_CODE_INVALID');
+    expect(typed.phone).toBe(PHONE);
+
+    expect((await confirm(attempt, code)).accessToken).toBe('a');
+    const mine = prisma.users.find((u) => u.email === 'owner@example.test');
+    expect(mine).toMatchObject({ phone: PHONE });
+    expect(mine?.phoneVerifiedAt).toBeInstanceOf(Date);
+    expect(typed).toMatchObject({
+      email: 'typed@example.test',
+      emailVerified: true,
+      phone: 'released:typed',
+    });
+  });
+
+  it('never releases the older account for a sign-up that is not confirmed, however long it waits or expires', async () => {
+    const typed = typedAccount();
+    await begin({ email: 'owner@example.test' });
+    later(24 * 3600 + 1);
+    expect(typed.phone).toBe(PHONE);
+    // an unrelated sign-up afterwards still finds the number held
+    later(61);
+    await begin({ email: 'other@example.test', phone: '08031234499' });
+    expect(typed.phone).toBe(PHONE);
+  });
+
+  it('refuses the code as taken, and changes nothing, when the number was proven by someone else meanwhile', async () => {
+    const typed = typedAccount();
+    const { attempt, code } = await begin({ email: 'owner@example.test' });
+    // another sign-up proved it first: the older account now holds a proven number
+    typed.phoneVerifiedAt = new Date();
+    const body = await failure(confirm(attempt, code));
+    expect(body.statusCode).toBe(409);
+    expect(typed.phone).toBe(PHONE);
+    const mine = prisma.users.find((u) => u.email === 'owner@example.test');
+    expect(mine?.phone).toBe(`released:${mine?.id}`);
+    expect(mine?.phoneVerifiedAt).toBeNull();
+  });
+
+  it('lets only the first of two sign-ups that wait on the same held number prove it', async () => {
+    const typed = typedAccount();
+    const first = await begin({ email: 'first@example.test' });
+    later(61);
+    const second = await begin({ email: 'second@example.test' });
+    expect((await confirm(second.attempt, second.code)).accessToken).toBe('a');
+    expect(typed.phone).toBe('released:typed');
+    // the first one's code is right too, but the number is now proven by the second
+    const body = await failure(confirm(first.attempt, first.code));
+    expect(body.statusCode).toBe(409);
+    const holders = prisma.users.filter((u) => u.phone === PHONE);
+    expect(holders).toHaveLength(1);
+    expect(holders[0].email).toBe('second@example.test');
+  });
+
+  it('removes an unconfirmed sign-up that came to hold the number meanwhile when the text proves it', async () => {
+    typedAccount();
+    const waiting = await begin({ email: 'waiting@example.test' });
+    // the older account goes away, and a plain sign-up then holds the number itself
+    prisma.users.splice(0, 1);
+    later(61);
+    await begin({ email: 'latecomer@example.test' });
+    expect(
+      prisma.users.find((u) => u.email === 'latecomer@example.test')?.phone,
+    ).toBe(PHONE);
+
+    expect((await confirm(waiting.attempt, waiting.code)).accessToken).toBe(
+      'a',
+    );
+    expect(prisma.users.map((u) => u.email)).toEqual(['waiting@example.test']);
+    expect(prisma.users[0].phone).toBe(PHONE);
+  });
+
+  it("keeps a long-standing account's number: it is not in the sign-up sequence", async () => {
+    prisma.users.push(legacy({ id: 'web', phone: PHONE }));
+    const body = await failure(service.signup(signup, IP));
+    expect(body.statusCode).toBe(409);
+    expect(prisma.users[0].phone).toBe(PHONE);
+    expect(sms.sent).toHaveLength(0);
   });
 
   it('never takes the email of an account that proved it, or of a web or legacy account', async () => {

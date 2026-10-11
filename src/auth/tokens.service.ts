@@ -114,13 +114,16 @@ export class TokensService {
     if (!user.phoneVerifiedAt) {
       const pending = await db.phoneVerification.findUnique({
         where: { userId: user.id },
-        select: { id: true },
+        select: { id: true, channel: true },
       });
       if (pending) {
         throw new ForbiddenException({
           statusCode: 403,
           code: 'PHONE_NOT_CONFIRMED',
-          message: 'Confirm your phone number to finish signing up.',
+          message:
+            pending.channel === 'email'
+              ? 'Enter the code we emailed you to finish signing up.'
+              : 'Confirm your phone number to finish signing up.',
         });
       }
     }
