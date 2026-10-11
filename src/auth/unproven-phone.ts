@@ -117,6 +117,32 @@ export function planClashes(
 }
 
 /**
+ * Removes a pending sign-up that nobody confirmed, the way every path that
+ * touches both of its rows locks them: the sign-up CODE row first, the account
+ * after (JOIN-03 round 5, D8). The Hub's anonymise and both confirm routes take
+ * the same order, so none of them can wait on the other for the row it holds:
+ * a deletion that deleted the code row first and is waiting for the account can
+ * no longer meet a request that deleted the account first and is waiting for
+ * the code row it cascades to.
+ *
+ * The code row is what makes the account a pending sign-up. If it is already
+ * gone, the account is no longer one: the Hub anonymised it, or its person
+ * confirmed it, in the moment since it was read. It is left as it is. (A
+ * confirmed account is never deleted by a newer sign-up; that sign-up is then
+ * refused as taken by the unique keys, the usual 409.)
+ */
+export async function removePendingSignup(
+  tx: Prisma.TransactionClient,
+  id: string,
+): Promise<void> {
+  const taken = await tx.phoneVerification.deleteMany({
+    where: { userId: id },
+  });
+  if (taken.count === 0) return;
+  await tx.wawuUser.deleteMany({ where: { id } });
+}
+
+/**
  * Carries out a plan inside the sign-up's transaction, before the new account
  * is created. It only removes the unconfirmed sign-ups in the way: it never
  * writes to an account that finished a sign-up.
@@ -126,7 +152,7 @@ export async function applyClashPlan(
   plan: ClashPlan,
 ): Promise<void> {
   for (const id of plan.remove) {
-    await tx.wawuUser.deleteMany({ where: { id } });
+    await removePendingSignup(tx, id);
   }
 }
 
@@ -169,7 +195,7 @@ export async function takeProvenNumber(
     }
   }
   for (const id of remove) {
-    await tx.wawuUser.deleteMany({ where: { id } });
+    await removePendingSignup(tx, id);
   }
   for (const id of release) {
     const done = await tx.wawuUser.updateMany({

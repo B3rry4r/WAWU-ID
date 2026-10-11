@@ -127,10 +127,13 @@ const sets = {
 };
 for (const [name, n] of Object.entries(sets)) {
   await account(`keeper-${name}`, { phone: `0${n}` });
-  // only set one's released account ever proved the number: it is the one whose proof `apply` must clear
+  // sets one and two: the released account had PROVED the number, so `apply` must clear that proof and `revert`
+  // must put it back (set two is restored, set one is anonymised first). JOIN-03 round 5, N26: before this the
+  // only account that had proved its number was the one that never gets restored, so a revert that left
+  // `phone_verified_for` empty passed this test.
   await account(`released-${name}`, {
     phone: `+234${n}`,
-    proved: name === 'one',
+    proved: name === 'one' || name === 'two',
   });
 }
 // a tie (set one: both proved) goes to the older account, so the keepers are the older ones
@@ -237,6 +240,19 @@ ok(
 ok(
   'revert: a released account is restored byte for byte',
   (await rowText(ids['released-two'])) === before['released-two'],
+);
+// N26: the restored account had proved its number; both the phone and the proof come back
+const restoredTwo = await row(ids['released-two']);
+ok(
+  'revert: the account that had proved its number proves it again (phone and phone_verified_for both restored)',
+  before['released-two'].includes(`+234${sets.two}`) &&
+    restoredTwo.phone === `+234${sets.two}` &&
+    restoredTwo.phone_verified_for === `+234${sets.two}` &&
+    restoredTwo.phone_verified_at !== null,
+  JSON.stringify({
+    phone: restoredTwo.phone?.slice(0, 9),
+    for: restoredTwo.phone_verified_for?.slice(0, 9),
+  }),
 );
 ok(
   'revert: a keeper is untouched',

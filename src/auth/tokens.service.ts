@@ -12,6 +12,7 @@ import { randomBytes, randomUUID } from 'crypto';
 import type { SignOptions } from 'jsonwebtoken';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwksService } from '../jwks/jwks.service';
+import { isClosedAccount } from './closed-account';
 import { phoneIsProven } from './phone-proof';
 import { phoneForClients } from './released-phone';
 import {
@@ -257,6 +258,17 @@ export class TokensService {
   }
 
   /**
+   * Delete every refresh token the account holds, under its lock (the order the
+   * Hub's anonymise takes: the account, then its tokens).
+   */
+  private async revokeAllRefreshTokens(userId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockAccount(tx, userId);
+      await tx.refreshToken.deleteMany({ where: { userId } });
+    });
+  }
+
+  /**
    * Housekeeping: delete the account's expired refresh-token records, at most
    * EXPIRED_SWEEP_BATCH of them. Nothing else removes an expired row (a token
    * nobody presents again leaves one behind), and the old scan paid argon2 for
@@ -402,6 +414,15 @@ export class TokensService {
       where: { id: userId },
     });
     if (!known) throw new UnauthorizedException('Invalid refresh token');
+    // A closed account (banned, on its way out, or anonymised by the Hub) has
+    // no session to renew (JOIN-03 round 5, D10): the token is refused like an
+    // unknown one and every token the account still holds goes with it. This is
+    // where a session stored AFTER the Hub closed the account (a sign-up
+    // confirmed in the same moment) is stopped, whatever wrote it.
+    if (isClosedAccount(known)) {
+      await this.revokeAllRefreshTokens(userId);
+      throw new UnauthorizedException('Invalid refresh token');
+    }
     await this.refuseIfPhonePending(known, this.prisma);
     const outcome = await this.prisma.$transaction(async (tx) => {
       await this.lockAccount(tx, userId);
@@ -412,6 +433,15 @@ export class TokensService {
       if (matched.expiresAt.getTime() <= Date.now()) return 'expired' as const;
       const user = await tx.wawuUser.findUnique({ where: { id: userId } });
       if (!user) return 'refused' as const;
+      // Read again under the account's lock: the Hub may have closed the
+      // account since `known` was read. The anonymise takes the same lock for
+      // its update and deletes the tokens after it, so either it ran first and
+      // this sees the account closed, or this ran first and it deletes the
+      // new token.
+      if (isClosedAccount(user)) {
+        await tx.refreshToken.deleteMany({ where: { userId } });
+        return 'refused' as const;
+      }
       return this.issueTokens(user, tx);
     });
     if (typeof outcome === 'string') {

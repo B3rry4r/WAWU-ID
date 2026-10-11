@@ -28,7 +28,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { erasedKeys } from './erased-identifiers';
+import { erasedKeys, otherHolders } from './erased-identifiers';
 import { DELETED_PHONE_PREFIX, phoneForClients } from './released-phone';
 import { holdsUnprovenPhone } from './unproven-phone';
 import { TokenPair, TokensService } from './tokens.service';
@@ -766,43 +766,46 @@ export class AuthService {
         // round 4, N16 and D7): in the sign-up code they were waiting for, in a
         // pending phone change, and as the KEY of the text, mail and wrong-code
         // counters and of a phone OTP. They are read before the scrub, then
-        // removed with it. The sign-up code row goes FIRST, the order the
-        // confirm routes take their locks in (the code row, then the account),
-        // so a confirm racing this deletion loses cleanly and never deadlocks:
-        // it finds its code row gone.
+        // removed with it. The sign-up code row goes FIRST, the order every
+        // path that touches both rows takes its locks in (the code row, then
+        // the account: the confirm routes, a newer sign-up that replaces a
+        // pending one, a confirm that proves a number a pending one holds), so
+        // none of them can deadlock against this deletion: the one that comes
+        // second finds the code row gone (JOIN-03 round 5, D8).
         const before = await tx.wawuUser.findUnique({
           where: { id: userId },
           select: { email: true, phone: true, phoneVerifiedFor: true },
         });
-        const signups = await tx.phoneVerification.findMany({
-          where: { userId },
-          select: { phone: true, claimEmail: true },
-        });
-        const changes = await tx.phoneChangeRequest.findMany({
-          where: { userId },
-          select: { newPhone: true },
-        });
-        const { keys, budgets } = erasedKeys({
-          phones: [
-            before?.phone,
-            before?.phoneVerifiedFor,
-            ...signups.map((s) => s.phone),
-            ...changes.map((c) => c.newPhone),
-          ],
-          emails: [before?.email, ...signups.map((s) => s.claimEmail)],
-        });
         await tx.phoneVerification.deleteMany({ where: { userId } });
         await tx.phoneChangeRequest.deleteMany({ where: { userId } });
+        // Only what is the account's OWN goes (JOIN-03 round 5, D11): the
+        // number it holds or proved and the address it holds, and only while
+        // no other account holds them. A number it merely typed or an address
+        // it merely claimed is somebody else's, and so are the counters, the
+        // wrong-code budget and the code in flight on it.
+        const own = {
+          phones: [before?.phone, before?.phoneVerifiedFor],
+          emails: [before?.email],
+        };
+        const { keys, budgets, otpDigits } = erasedKeys(
+          own,
+          await otherHolders(tx, userId, own),
+        );
         if (keys.length > 0) {
           await tx.rateCounter.deleteMany({ where: { key: { in: keys } } });
           await tx.otpSession.deleteMany({ where: { phone: { in: keys } } });
+        }
+        if (otpDigits.length > 0) {
+          // The OTP route stores the number as it was written (spaces, dashes,
+          // a +, a leading 00): match on the digits (JOIN-03 round 5, N24).
+          await tx.$executeRaw`DELETE FROM otp_sessions WHERE regexp_replace(phone, '[^0-9]', '', 'g') = ANY(${otpDigits}::text[])`;
         }
         if (budgets.length > 0) {
           await tx.phoneGuessBudget.deleteMany({
             where: { phone: { in: budgets } },
           });
         }
-        const updated = await tx.wawuUser.update({
+        const done = await tx.wawuUser.updateMany({
           where: { id: userId },
           data: {
             email: null,
@@ -822,9 +825,16 @@ export class AuthService {
             deletedAt: new Date(),
           },
         });
+        // A newer sign-up took the code row first and removed this pending
+        // account with it: there is nothing left to anonymise, and what this
+        // transaction deleted above is rolled back with it.
+        if (done.count === 0) throw new NotFoundException('User not found');
+        // Every session of the account goes in this same transaction, so a
+        // token written before it commits is deleted with the rest (a token
+        // stored AFTER it commits is refused at refresh: D10).
         await tx.refreshToken.deleteMany({ where: { userId } });
         await tx.passwordResetToken.deleteMany({ where: { userId } });
-        return updated;
+        return { id: userId, status: 'banned' };
       });
       return { id: scrubbed.id, status: scrubbed.status, deleted: false };
     }
