@@ -100,6 +100,14 @@ model WawuUser {
   // AuthService.login() lets a phone-verified account in without a verified
   // email; an account with this NULL is judged exactly as before.
   phoneVerifiedAt  DateTime?        @map("phone_verified_at")
+  // The number `phone_verified_at` was set FOR: the one the sign-up code was
+  // texted to. The token says `phoneVerified` only while this is still the
+  // account's `phone`, so a number written later by the internal phone-change
+  // routes (which prove the mailbox, not the number, and leave
+  // `phone_verified_at` alone) is never vouched for (JOIN-03 round 2, D1).
+  // Sign-in rules read `phone_verified_at` and are unchanged. NULL for an
+  // account that never proved a phone.
+  phoneVerifiedFor String?          @map("phone_verified_for")
   // What the person does for a living, free text, as typed in the app.
   occupation       String?
   // 'user' | 'creator' (the Hub's AccountType), enforced in the application

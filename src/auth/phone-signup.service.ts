@@ -481,6 +481,9 @@ export class PhoneSignupService {
         return tx.wawuUser.update({
           where: { id: pending.userId },
           data: {
+            // The number the code went to: the token vouches for the phone
+            // only while the account still holds it (JOIN-03 round 2, D1).
+            phoneVerifiedFor: pending.phone,
             phoneVerifiedAt: new Date(),
             ...(takesNumber ? { phone: pending.phone } : {}),
             ...(pending.claimEmail ? { email: pending.claimEmail } : {}),
