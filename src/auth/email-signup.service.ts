@@ -12,6 +12,8 @@ import { normalisePhone, phoneVariants } from '../common/phone.util';
 import { MailSendError, MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthService, type UserResponse } from './auth.service';
+import { isClosedAccount } from './closed-account';
+import { SIGNUP_EMAIL_BUDGET } from './erased-identifiers';
 import type { SignupDto } from './dto/signup.dto';
 import { maskEmail } from './mask-email';
 import {
@@ -404,7 +406,7 @@ export class EmailSignupService {
       throw WRONG_CODE();
     }
     const email = addressOf(pending);
-    const budget = `signup-email:${email}`;
+    const budget = `${SIGNUP_EMAIL_BUDGET}${email}`;
 
     // The guess is taken before the code is looked at, so parallel guesses
     // share one budget.
@@ -639,7 +641,10 @@ export class EmailSignupService {
       row.channel !== 'email' ||
       row.user.emailVerified ||
       row.phone !== phone ||
-      row.signupExpiresAt <= new Date()
+      row.signupExpiresAt <= new Date() ||
+      // A closed account has no sign-up to finish (JOIN-03 round 4, D7): the
+      // mailed code is neither checked nor answered, and nothing is written back.
+      isClosedAccount(row.user)
     ) {
       return null;
     }

@@ -404,6 +404,71 @@ describe('PhoneSignupService', () => {
     expect(sessionFor).not.toHaveBeenCalled();
   });
 
+  // ── JOIN-03 round 4, D7: a closed account has no sign-up to finish ─────────
+
+  describe('an account the Hub closed cannot finish the sign-up it was waiting on', () => {
+    const closures: Array<[string, (u: UserRow) => void]> = [
+      ['banned', (u) => void (u.status = 'banned')],
+      ['deletion begun', (u) => void (u.status = 'pending_deletion')],
+      ['deletedAt stamped', (u) => void (u.deletedAt = new Date())],
+      ['phone is the deleted marker', (u) => void (u.phone = 'deleted:u1')],
+      [
+        'anonymised (all of the above and no email)',
+        (u) => {
+          u.status = 'banned';
+          u.deletedAt = new Date();
+          u.phone = 'deleted:u1';
+          u.email = null;
+        },
+      ],
+    ];
+
+    it.each(closures)(
+      'refuses the right code, writes nothing back and issues no session: %s',
+      async (_name, close) => {
+        const { attempt, code } = await begin();
+        // what a stranger holding no sign-up would be told
+        const unknown = await failure(confirm('not-the-secret', code));
+        close(prisma.users[0]);
+        const closed = JSON.stringify(prisma.users[0]);
+
+        const body = await failure(confirm(attempt, code));
+        expect(body).toEqual(unknown);
+        expect(body.code).toBe('PHONE_CODE_INVALID');
+        expect(sessionFor).not.toHaveBeenCalled();
+        // nothing was proved and nothing was put back on the row
+        expect(JSON.stringify(prisma.users[0])).toBe(closed);
+        expect(prisma.users[0].phoneVerifiedAt).toBeNull();
+        expect(prisma.users[0]).not.toHaveProperty('phoneVerifiedFor');
+        expect(prisma.codes()).toHaveLength(1);
+      },
+    );
+
+    it.each(closures)(
+      'texts nothing to its number when a new code is asked for: %s',
+      async (_name, close) => {
+        const { attempt } = await begin();
+        close(prisma.users[0]);
+        later(61);
+        const out = await service.start(PHONE, attempt, IP);
+        await flush();
+        // the same answer as for any number nobody can resend to, and no text
+        expect(out).toMatchObject({
+          phone: PHONE,
+          expiresIn: 300,
+          resendIn: 60,
+        });
+        expect(sms.sent).toHaveLength(1);
+      },
+    );
+
+    it('still lets an account that is not closed finish (the control)', async () => {
+      const { attempt, code } = await begin();
+      prisma.users[0].status = 'active';
+      expect((await confirm(attempt, code)).accessToken).toBe('a');
+    });
+  });
+
   it('does not treat a legacy account with the same phone as pending', async () => {
     prisma.users.push(legacy({ phone: '08099900011' }));
     const body = await failure(

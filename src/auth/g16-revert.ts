@@ -1,7 +1,9 @@
+import { releasedPhoneFor } from './released-phone';
+
 /**
- * The clash rule of `revert` in scripts/data/g16-duplicate-phones.mjs
- * (BACKEND_GAPS G-16, AUTH-05), kept here so it is compiled with the service
- * and tested. The script itself is run only by the owner.
+ * The rules of `revert` in scripts/data/g16-duplicate-phones.mjs (BACKEND_GAPS
+ * G-16, AUTH-05), kept here so they are compiled with the service and tested.
+ * The script itself is run only by the owner.
  *
  * `apply` records every row it saw holding each number it touched (the
  * keeper, the rows it released and the rows it held because their phone is
@@ -43,4 +45,34 @@ export function revertClashes(
             !seen.has(`${u.id} ${u.phone}`))),
     );
   });
+}
+
+/**
+ * Which of the rows `apply` released `revert` may put back (JOIN-03 round 4,
+ * D6). A row goes back only while it still reads `released:<its id>`, the
+ * marker `apply` wrote. A row that reads anything else has moved on since: the
+ * Hub finalised its deletion (`deleted:<id>`, and its proved number cleared),
+ * or a person gave it another number. Putting the old phone and the old proved
+ * number back over that would return a deleted person's number to the
+ * identity table, so such a row is left exactly as it is.
+ *
+ * `restore` is what `revert` writes; `left` is what it skips and says so. The
+ * `UPDATE` in the script repeats the same test in its WHERE, so a row changed
+ * between this read and that write is skipped as well.
+ */
+export function stillReleased<T extends { user_id: string }>(
+  releases: T[],
+  live: LiveRow[],
+): { restore: T[]; left: T[] } {
+  const phoneOf = new Map(live.map((u) => [u.id, u.phone]));
+  const restore: T[] = [];
+  const left: T[] = [];
+  for (const r of releases) {
+    if (phoneOf.get(r.user_id) === releasedPhoneFor(r.user_id)) {
+      restore.push(r);
+    } else {
+      left.push(r);
+    }
+  }
+  return { restore, left };
 }

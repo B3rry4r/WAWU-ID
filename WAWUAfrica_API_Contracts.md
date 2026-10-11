@@ -568,6 +568,13 @@ deletion) is `phoneVerified: false` even if `phone_verified_at` is still set,
 and a released phone's `phone` claim is an empty string. Releasing a phone or
 anonymising an account also clears `phone_verified_for`, so the number an
 account proved does not outlive the account's hold on it (JOIN-03 round 3).
+Anonymising (`DELETE /internal/users/:wawuId?mode=anonymize`) also removes what
+WAWU ID keeps about the person outside the account's own row: the sign-up code
+the account was waiting on, a pending phone change, and the counters, wrong-code
+budgets and phone OTP keyed on their number or address (JOIN-03 round 4). An
+account that is banned, on its way out or anonymised can no longer be confirmed,
+texted or mailed a sign-up code: the answer is the one any unknown sign-up gets,
+nothing is written to the row and no session is issued.
 
 A phone written afterwards by the internal phone-change routes (`PATCH
 /internal/users/:wawuId/phone`, or the request and confirm pair whose code goes
