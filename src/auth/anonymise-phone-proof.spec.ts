@@ -5,6 +5,7 @@ import request from 'supertest';
 import type { App } from 'supertest/types';
 import { AuthService } from './auth.service';
 import { InternalController } from './internal.controller';
+import { erasureLockIds, erasureLockKeys } from './erased-identifiers';
 import { phoneIsProven } from './phone-proof';
 
 /**
@@ -23,6 +24,12 @@ import { phoneIsProven } from './phone-proof';
  * cleared, and only while no other account holds them; an OTP row is matched on
  * its digits whatever spelling it was stored in; the sessions go in the same
  * transaction; and an account a newer sign-up already removed answers 404.
+ *
+ * Round 6 (D12, N31): the account's own row is read AFTER the sign-up code row
+ * is deleted and under the account's lock, so a confirm that landed a moment
+ * earlier is not missed; who else holds the number is asked under an advisory
+ * lock shared by every account that holds it; and the hard delete takes the
+ * code row before the account.
  */
 describe('DELETE /internal/users/:id?mode=anonymize clears the number the account proved', () => {
   const KEY = 'spec-service-key';
@@ -109,6 +116,10 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
         : stored[key] === want,
     );
   const order: string[] = [];
+  /** The advisory-lock ids taken, in order (`pg_advisory_xact_lock`). */
+  const advisory: string[] = [];
+  /** Runs once the sign-up code rows have been deleted: a spec's way to let a confirm commit just before. */
+  let afterCodeRowDelete: (() => void) | null = null;
   const table = (name: keyof typeof store) => ({
     findMany: ({ where }: { where: Where }) =>
       Promise.resolve(store[name].filter((r) => matches(r, where))),
@@ -116,6 +127,7 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
       order.push(`${name}.deleteMany`);
       const before = store[name].length;
       store[name] = store[name].filter((r) => !matches(r, where));
+      if (name === 'phoneVerification') afterCodeRowDelete?.();
       return Promise.resolve({ count: before - store[name].length });
     },
   });
@@ -125,6 +137,7 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
   const gone: string[] = [];
   const tokenWhere: Where[] = [];
   let vanishAtUpdate = false;
+  let vanishAtLock = false;
 
   beforeEach(async () => {
     row = {
@@ -141,6 +154,9 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
     gone.length = 0;
     tokenWhere.length = 0;
     vanishAtUpdate = false;
+    vanishAtLock = false;
+    afterCodeRowDelete = null;
+    advisory.length = 0;
     order.length = 0;
     accounts = [];
     for (const [name, seed] of Object.entries(seeded())) {
@@ -148,26 +164,32 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
     }
     const tx = {
       wawuUser: {
-        findUnique: ({ where }: { where: { id: string } }) =>
-          Promise.resolve(where.id === row?.id ? { ...row } : null),
-        // the other accounts that hold one of the numbers or addresses asked for
         findMany: ({
           where,
         }: {
           where: {
-            id: { not: string };
-            OR: Array<{
+            id: string | { not: string };
+            OR?: Array<{
               phone?: { in: string[] };
               email?: { equals: string; mode: string };
             }>;
           };
         }) => {
+          // the hard delete looks its account up by id (JOIN-03 round 6, N31)
+          if (typeof where.id === 'string') {
+            order.push('wawuUser.find');
+            return Promise.resolve(
+              where.id === row?.id ? [{ id: row.id }] : [],
+            );
+          }
+          // the other accounts that hold one of the numbers or addresses asked for
           order.push('wawuUser.findMany');
+          const notId = where.id.not;
           return Promise.resolve(
             accounts
-              .filter((a) => a.id !== where.id.not)
+              .filter((a) => a.id !== notId)
               .filter((a) =>
-                where.OR.some(
+                (where.OR ?? []).some(
                   (w) =>
                     (w.phone && w.phone.in.includes(a.phone)) ||
                     (w.email &&
@@ -177,6 +199,14 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
               )
               .map((a) => ({ phone: a.phone, email: a.email })),
           );
+        },
+        // the hard delete's account delete, after its code row
+        deleteMany: ({ where }: { where: { AND: Array<{ id?: string }> } }) => {
+          order.push('wawuUser.hardDelete');
+          const id = where.AND[0]?.id;
+          if (id !== row?.id) return Promise.resolve({ count: 0 });
+          row = undefined as never;
+          return Promise.resolve({ count: 1 });
         },
         updateMany: ({
           where,
@@ -193,10 +223,34 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
           return Promise.resolve({ count: 1 });
         },
       },
-      // DELETE FROM otp_sessions WHERE regexp_replace(phone, '[^0-9]', '', 'g') = ANY($1::text[])
-      $executeRaw: (strings: TemplateStringsArray, digits: string[]) => {
+      // The account's own row, read under its lock (JOIN-03 round 6, D12):
+      // SELECT email, phone, phone_verified_for FROM wawu_users WHERE id = $1::uuid FOR NO KEY UPDATE
+      $queryRaw: (strings: TemplateStringsArray, id: string) => {
+        order.push('wawuUser.lock');
+        expect(strings.join('?')).toMatch(
+          /FROM wawu_users WHERE id = \?::uuid FOR NO KEY UPDATE$/,
+        );
+        if (vanishAtLock || id !== row?.id) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            email: row.email,
+            phone: row.phone,
+            phone_verified_for: row.phoneVerifiedFor,
+          },
+        ]);
+      },
+      $executeRaw: (strings: TemplateStringsArray, arg: string | string[]) => {
+        const text = strings.join('?');
+        // SELECT pg_advisory_xact_lock($1::bigint)
+        if (text.includes('pg_advisory_xact_lock')) {
+          order.push('advisoryLock');
+          advisory.push(arg as string);
+          return Promise.resolve(0);
+        }
+        // DELETE FROM otp_sessions WHERE regexp_replace(phone, '[^0-9]', '', 'g') = ANY($1::text[])
         order.push('otpSession.deleteByDigits');
-        expect(strings.join('?')).toContain('regexp_replace(phone');
+        expect(text).toContain('regexp_replace(phone');
+        const digits = arg as string[];
         const before = store.otpSession.length;
         store.otpSession = store.otpSession.filter(
           (r) => !digits.includes((r.phone as string).replace(/\D/g, '')),
@@ -224,10 +278,6 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
       wawuUser: {
         findUnique: ({ where }: { where: { id: string } }) =>
           Promise.resolve(where.id === row?.id ? row : null),
-        delete: () => {
-          row = undefined as never;
-          return Promise.resolve({});
-        },
       },
       // a transaction that fails is rolled back: nothing it deleted stays deleted
       $transaction: async (run: (t: typeof tx) => Promise<unknown>) => {
@@ -403,12 +453,16 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
       expect(store).toEqual(seeded());
     });
 
-    it("a hard delete is left to the database's cascade and touches none of these tables here", async () => {
+    it("a hard delete is left to the database's cascade and touches none of these tables here, except the sign-up code row it takes ahead of the account (N31)", async () => {
       await request(app.getHttpServer() as App)
         .delete(`/internal/users/${ID}`)
         .set('x-service-key', KEY)
         .expect(200);
-      expect(order).toEqual([]);
+      expect(order).toEqual([
+        'wawuUser.find',
+        'phoneVerification.deleteMany',
+        'wawuUser.hardDelete',
+      ]);
     });
   });
 
@@ -572,6 +626,95 @@ describe('DELETE /internal/users/:id?mode=anonymize clears the number the accoun
       expect(row.phone).toBe(REAL);
       expect(row.status).toBe('active');
       expect(gone).toEqual([]);
+    });
+
+    it('answers 404 the same way when the account is already gone at the lock, and removes nothing else', async () => {
+      vanishAtLock = true;
+      await anonymise().expect(404);
+      expect(store).toEqual(seeded());
+      expect(row.phone).toBe(REAL);
+      expect(order).not.toContain('wawuUser.update');
+      expect(order).not.toContain('rateCounter.deleteMany');
+    });
+  });
+
+  // ── JOIN-03 round 6, D12: what is the account's own is decided under its locks
+
+  describe("decides what is the account's own from a read taken under its locks (D12)", () => {
+    it('deletes the sign-up code row, then reads the locked account, then takes the number locks, then asks who else holds it, then deletes', async () => {
+      await anonymise().expect(200);
+      const step = (name: string) => order.indexOf(name);
+      expect(order[0]).toBe('phoneVerification.deleteMany');
+      expect(step('wawuUser.lock')).toBe(1);
+      expect(step('advisoryLock')).toBeGreaterThan(step('wawuUser.lock'));
+      expect(step('wawuUser.findMany')).toBeGreaterThan(step('advisoryLock'));
+      expect(step('rateCounter.deleteMany')).toBeGreaterThan(
+        step('wawuUser.findMany'),
+      );
+      expect(step('wawuUser.update')).toBeGreaterThan(
+        step('rateCounter.deleteMany'),
+      );
+    });
+
+    it("reads the account's number AFTER the code row is gone: a confirm that gave it the number a moment before is not missed (a)", async () => {
+      // a sign-up made without its number (another account holds it): the phone is the marker, the number is
+      // only in the code row, and the counters keyed on it are the holder's until the code proves it
+      row.phone = `released:${ID}`;
+      row.phoneVerifiedFor = null;
+      row.phoneVerifiedAt = null;
+      // the confirm commits between this request's start and its code-row delete: the account holds and has proved the number
+      afterCodeRowDelete = () => {
+        row.phone = REAL;
+        row.phoneVerifiedFor = REAL;
+        row.phoneVerifiedAt = new Date('2026-10-11T10:00:00Z');
+      };
+      await anonymise().expect(200);
+      expect(store.rateCounter.filter((r) => r.key === REAL)).toHaveLength(0);
+      expect(
+        store.phoneGuessBudget.filter((r) => r.phone === REAL),
+      ).toHaveLength(0);
+      expect(store.otpSession.filter((r) => r.phone === REAL)).toHaveLength(0);
+      expect(row.phone).toBe(`deleted:${ID}`);
+    });
+
+    it('takes one lock per number or address, the same ids for the same number in any spelling and any case', async () => {
+      await anonymise().expect(200);
+      // phone and proved number are one key; the address is another
+      expect(advisory).toHaveLength(2);
+      expect(advisory).toEqual(
+        erasureLockIds([`phone:${REAL}`, `email:${GONE_ADDRESS}`]),
+      );
+      expect(erasureLockKeys({ phones: ['08031234567'], emails: [] })).toEqual(
+        erasureLockKeys({ phones: [REAL], emails: [] }),
+      );
+      expect(
+        erasureLockKeys({ phones: [], emails: [' ADA@Example.test '] }),
+      ).toEqual(erasureLockKeys({ phones: [], emails: [GONE_ADDRESS] }));
+    });
+
+    it('takes the locks in ascending order, whatever order the number and the address are listed in', async () => {
+      row.phone = '+2349011112222';
+      await anonymise().expect(200);
+      const ids = advisory.map((id) => BigInt(id));
+      expect(ids.length).toBeGreaterThanOrEqual(3);
+      expect(ids).toEqual(
+        [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+      );
+    });
+
+    it('takes no lock when the account held no number and no address', async () => {
+      row.phone = `deleted:${ID}`;
+      row.phoneVerifiedFor = null;
+      row.email = null;
+      await anonymise().expect(200);
+      expect(advisory).toEqual([]);
+    });
+
+    it('still keeps the rows of a number another account holds (D11 under the lock)', async () => {
+      accounts = [{ id: 'twin', phone: '234' + REAL.slice(4), email: null }];
+      await anonymise().expect(200);
+      expect(store.rateCounter.filter((r) => r.key === REAL)).toHaveLength(2);
+      expect(advisory.length).toBeGreaterThan(0);
     });
   });
 });

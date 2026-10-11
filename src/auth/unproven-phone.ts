@@ -134,9 +134,14 @@ export function planClashes(
 export async function removePendingSignup(
   tx: Prisma.TransactionClient,
   id: string,
+  /** Only a sign-up whose 24 hours ended before this moment (the expired sign-up sweep). */
+  expiredBefore?: Date,
 ): Promise<void> {
   const taken = await tx.phoneVerification.deleteMany({
-    where: { userId: id },
+    where: {
+      userId: id,
+      ...(expiredBefore ? { signupExpiresAt: { lt: expiredBefore } } : {}),
+    },
   });
   if (taken.count === 0) return;
   await tx.wawuUser.deleteMany({ where: { id } });

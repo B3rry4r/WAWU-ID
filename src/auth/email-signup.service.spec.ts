@@ -632,6 +632,81 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
     });
   });
 
+  // ── JOIN-03 round 6, N30: a resend in flight when the Hub anonymises ───────
+
+  describe("a resend that meets the Hub's anonymise answers as a resend after it and leaves no counter row (N30)", () => {
+    const ADDRESS = 'ada@example.test';
+
+    /**
+     * The Hub's anonymise commits after the resend has found the sign-up and
+     * before it has spent anything: it removes the code row, closes the account
+     * and clears the counters keyed on the address, then the resend's own
+     * reservations write them again.
+     */
+    function anonymiseBeforeTheResendSpends() {
+      const real = limits.hit.bind(limits) as MemoryRateLimiter['hit'];
+      let closed = false;
+      return jest
+        .spyOn(limits, 'hit')
+        .mockImplementation(async (scope, key, limit, windowSeconds) => {
+          if (!closed && scope === 'signup-mail-gap') {
+            closed = true;
+            Object.assign(prisma.users[0], {
+              status: 'banned',
+              deletedAt: new Date(),
+              phone: 'deleted:u1',
+              email: null,
+            });
+            prisma.users[0].phoneVerification = null;
+            await limits.forget('signup-mail-gap', ADDRESS);
+            await limits.forget('signup-mail-day', ADDRESS);
+          }
+          return real(scope, key, limit, windowSeconds);
+        });
+    }
+
+    it('answers what a resend made after the anonymise answers, and mails nothing', async () => {
+      const { attempt } = await begin();
+      later(61);
+      const spy = anonymiseBeforeTheResendSpends();
+      const inFlight = await service.start(PHONE, attempt, IP);
+      spy.mockRestore();
+      const after = await service.start(PHONE, attempt, IP);
+      await flush();
+      expect(inFlight).toEqual(after);
+      expect(inFlight).toEqual({
+        phone: PHONE,
+        expiresIn: 600,
+        resendIn: 60,
+        channel: 'email',
+      });
+      expect(mail.sent).toHaveLength(1);
+    });
+
+    it("leaves no counter row keyed on the closed account's address, and gives back the shared day's mail", async () => {
+      const { attempt } = await begin();
+      later(61);
+      const spy = anonymiseBeforeTheResendSpends();
+      await service.start(PHONE, attempt, IP);
+      spy.mockRestore();
+      expect(limits.hasCounter('signup-mail-gap', ADDRESS)).toBe(false);
+      expect(limits.hasCounter('signup-mail-day', ADDRESS)).toBe(false);
+      expect(
+        (await limits.isFull('signup-mail-global', 'all', 2, 86400)).allowed,
+      ).toBe(true);
+    });
+
+    it('the control: a resend that finds its sign-up still there mails the new code and counts it', async () => {
+      const { attempt } = await begin();
+      later(61);
+      await service.start(PHONE, attempt, IP);
+      await flush();
+      expect(mail.sent).toHaveLength(2);
+      expect(limits.hasCounter('signup-mail-gap', ADDRESS)).toBe(true);
+      expect(limits.hasCounter('signup-mail-day', ADDRESS)).toBe(true);
+    });
+  });
+
   // ── JOIN-03 round 5, D8: a refused mail removes the sign-up code row first ──
 
   it('removes a sign-up whose mail was refused code row first, then the account (the order every path that removes a pending sign-up locks in)', async () => {

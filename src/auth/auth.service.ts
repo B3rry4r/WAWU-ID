@@ -26,9 +26,10 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { erasedKeys, otherHolders } from './erased-identifiers';
+import { erasedKeys, lockErasure, otherHolders } from './erased-identifiers';
 import { DELETED_PHONE_PREFIX, phoneForClients } from './released-phone';
-import { holdsUnprovenPhone } from './unproven-phone';
+import { deleteAccountsMatching } from './account-removal';
+import { holdsUnprovenPhone, removePendingSignup } from './unproven-phone';
 import { TokenPair, TokensService } from './tokens.service';
 
 export interface UserResponse {
@@ -165,25 +166,43 @@ export class AuthService {
     }
   }
 
-  /** Remove the expired, never-confirmed mobile sign-ups that hold this email or phone. */
+  /**
+   * Remove the expired, never-confirmed mobile sign-ups that hold this email or
+   * phone. Each goes the way every other path removes a pending sign-up (the
+   * sign-up code row first, the account after, in one transaction): this runs
+   * on a web sign-up, which can land at the very moment a confirm for the same
+   * sign-up does, and a delete that took the account first would deadlock with
+   * the confirm (JOIN-03 round 6, N31). A sign-up whose code row is already
+   * gone was confirmed or anonymised in the meantime and is left as it is.
+   */
   private async releaseExpiredSignups(
     email: string,
     phone: string,
   ): Promise<void> {
     const typed = normalisePhone(phone);
-    await this.prisma.wawuUser.deleteMany({
-      where: {
-        OR: [
-          { email },
-          {
-            phone: {
-              in: [...new Set([phone, ...(typed ? phoneVariants(typed) : [])])],
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const expired = await tx.wawuUser.findMany({
+        where: {
+          OR: [
+            { email },
+            {
+              phone: {
+                in: [
+                  ...new Set([phone, ...(typed ? phoneVariants(typed) : [])]),
+                ],
+              },
             },
-          },
-        ],
-        phoneVerifiedAt: null,
-        phoneVerification: { is: { signupExpiresAt: { lt: new Date() } } },
-      },
+          ],
+          phoneVerifiedAt: null,
+          phoneVerification: { is: { signupExpiresAt: { lt: now } } },
+        },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+      });
+      for (const { id } of expired) {
+        await removePendingSignup(tx, id, now);
+      }
     });
   }
 
@@ -764,17 +783,36 @@ export class AuthService {
         // round 4, N16 and D7): in the sign-up code they were waiting for, in a
         // pending phone change, and as the KEY of the text, mail and wrong-code
         // counters and of a phone OTP. They are read before the scrub, then
-        // removed with it. The sign-up code row goes FIRST, the order every
-        // path that touches both rows takes its locks in (the code row, then
-        // the account: the confirm routes, a newer sign-up that replaces a
-        // pending one, a confirm that proves a number a pending one holds), so
-        // none of them can deadlock against this deletion: the one that comes
-        // second finds the code row gone (JOIN-03 round 5, D8).
-        const before = await tx.wawuUser.findUnique({
-          where: { id: userId },
-          select: { email: true, phone: true, phoneVerifiedFor: true },
-        });
+        // removed with it.
+        //
+        // The order is the one every path that touches both rows takes (the
+        // sign-up code row, then the account: the confirm routes, a newer
+        // sign-up that replaces a pending one, a confirm that proves a number a
+        // pending one holds, the hard and SAF deletes and the expired sign-up
+        // sweep), so none of them can deadlock against this deletion (round 5,
+        // D8). Deleting the code row first is also what waits for a confirm in
+        // flight: the confirm deletes it before it gives the account its
+        // number, so by the time this statement returns the account holds
+        // whatever the confirm gave it (round 6, D12).
         await tx.phoneVerification.deleteMany({ where: { userId } });
+        // Then the account's own row, locked: what is its own is read here, and
+        // nothing can change it until this transaction ends. A newer sign-up
+        // that took the code row first and removed the pending account with it
+        // leaves no row to lock: there is nothing left to anonymise, and what
+        // this transaction deleted above is rolled back with it.
+        const locked = await tx.$queryRaw<
+          Array<{
+            email: string | null;
+            phone: string;
+            phone_verified_for: string | null;
+          }>
+        >`SELECT email, phone, phone_verified_for FROM wawu_users WHERE id = ${userId}::uuid FOR NO KEY UPDATE`;
+        if (locked.length === 0) throw new NotFoundException('User not found');
+        const before = {
+          email: locked[0].email,
+          phone: locked[0].phone,
+          phoneVerifiedFor: locked[0].phone_verified_for,
+        };
         await tx.phoneChangeRequest.deleteMany({ where: { userId } });
         // Only what is the account's OWN goes (JOIN-03 round 5, D11): the
         // number it holds or proved and the address it holds, and only while
@@ -782,9 +820,14 @@ export class AuthService {
         // it merely claimed is somebody else's, and so are the counters, the
         // wrong-code budget and the code in flight on it.
         const own = {
-          phones: [before?.phone, before?.phoneVerifiedFor],
-          emails: [before?.email],
+          phones: [before.phone, before.phoneVerifiedFor],
+          emails: [before.email],
         };
+        // Who else holds them is asked under a lock every account that holds
+        // the same number or address closes under (round 6, D12): two such
+        // accounts closed together queue here instead of each reading "the
+        // other one holds it", so the second clears what the first left.
+        await lockErasure(tx, own);
         const { keys, budgets, otpDigits } = erasedKeys(
           own,
           await otherHolders(tx, userId, own),
@@ -823,9 +866,8 @@ export class AuthService {
             deletedAt: new Date(),
           },
         });
-        // A newer sign-up took the code row first and removed this pending
-        // account with it: there is nothing left to anonymise, and what this
-        // transaction deleted above is rolled back with it.
+        // The row is locked since the read above, so it is still there; this
+        // only guards the update.
         if (done.count === 0) throw new NotFoundException('User not found');
         // Every session of the account goes in this same transaction, so a
         // token written before it commits is deleted with the rest (a token
@@ -837,8 +879,12 @@ export class AuthService {
       return { id: scrubbed.id, status: scrubbed.status, deleted: false };
     }
 
-    // Hard delete — refresh/reset tokens cascade via the schema relations.
-    await this.prisma.wawuUser.delete({ where: { id: userId } });
+    // Hard delete — refresh/reset tokens cascade via the schema relations. The
+    // sign-up code row goes ahead of the account (JOIN-03 round 6, N31).
+    const removed = await this.prisma.$transaction((tx) =>
+      deleteAccountsMatching(tx, { id: userId }),
+    );
+    if (removed === 0) throw new NotFoundException('User not found');
     return { id: userId, status: 'deleted', deleted: true };
   }
 

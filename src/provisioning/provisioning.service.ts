@@ -4,6 +4,7 @@ import { normalizeGender } from '../common/gender.util';
 import { SafProvisionDto } from './dto/saf-provision.dto';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { deleteAccountsMatching } from '../auth/account-removal';
 import { TokensService } from '../auth/tokens.service';
 import { PoliciesService } from '../policies/policies.service';
 
@@ -349,12 +350,15 @@ export class ProvisioningService {
     if (!email && !phone) {
       return { deleted: 0 };
     }
-    const result = await this.prisma.wawuUser.deleteMany({
-      where: {
+    // The sign-up code row goes ahead of each account, the order every path
+    // that touches both locks them in (JOIN-03 round 6, N31): a confirm landing
+    // on the same pending sign-up must not deadlock with this delete.
+    const deleted = await this.prisma.$transaction((tx) =>
+      deleteAccountsMatching(tx, {
         OR: [...(email ? [{ email }] : []), ...(phone ? [{ phone }] : [])],
-      },
-    });
-    return { deleted: result.count };
+      }),
+    );
+    return { deleted };
   }
 
   /**
