@@ -146,6 +146,21 @@ describe('erasedKeys', () => {
       },
     );
 
+    it.each([
+      ['0803 123 4567', '+2348031234567'],
+      ['08031234567', '234 803 123 4567'],
+      ['+234-803-123-4567', '08031234567'],
+    ])(
+      'compares the number as a number, not as text: stored %j, held by another as %j',
+      (stored, theirs) => {
+        const out = erasedKeys(
+          { phones: [stored], emails: [] },
+          { phones: [theirs], emails: [] },
+        );
+        expect(out).toEqual({ keys: [], budgets: [], otpDigits: [] });
+      },
+    );
+
     it('judges each number on its own: the one nobody holds is still named', () => {
       const out = erasedKeys(
         { phones: ['+2348031234567', '+2349011112222'], emails: [] },
