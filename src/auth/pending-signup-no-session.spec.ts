@@ -69,12 +69,16 @@ describe('a pending mobile sign-up holds no session', () => {
         findUnique: jest.fn().mockResolvedValue(found),
         create: jest.fn().mockResolvedValue(row),
         update: jest.fn().mockResolvedValue(row),
+        // the expired sign-up sweep in register looks the candidates up, then
+        // removes each one code row first (JOIN-03 round 6, N31)
+        findMany: jest.fn().mockResolvedValue([]),
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       phoneVerification: {
         findUnique: jest
           .fn()
           .mockResolvedValue(pending ? { id: 'pv1', channel } : null),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       emailVerificationCode: {
         findFirst: jest.fn().mockResolvedValue({
@@ -275,7 +279,7 @@ describe('a pending mobile sign-up holds no session', () => {
       lastName: 'Obi',
     });
     const where = (
-      prisma.wawuUser.deleteMany.mock.calls as Array<
+      prisma.wawuUser.findMany.mock.calls as Array<
         [{ where: Record<string, unknown> }]
       >
     )[0][0].where;
