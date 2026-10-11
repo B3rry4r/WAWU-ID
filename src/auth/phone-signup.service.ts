@@ -15,6 +15,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SMS_PROVIDER, SmsSendError } from '../sms/sms.provider';
 import type { SmsProvider } from '../sms/sms.provider';
 import { AuthService, type UserResponse } from './auth.service';
+import { isClosedAccount } from './closed-account';
 import type { SignupDto } from './dto/signup.dto';
 import {
   phoneVerificationConfig,
@@ -644,7 +645,11 @@ export class PhoneSignupService {
       row.user.phoneVerifiedAt ||
       row.phone !== phone ||
       row.channel === 'email' ||
-      row.signupExpiresAt <= new Date()
+      row.signupExpiresAt <= new Date() ||
+      // A closed account (banned, or anonymised by the Hub) has no sign-up to
+      // finish (JOIN-03 round 4, D7): no code is texted to it again, none is
+      // checked, and nothing is written back to its row.
+      isClosedAccount(row.user)
     ) {
       return null;
     }

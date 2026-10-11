@@ -26,6 +26,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { erasedKeys } from './erased-identifiers';
 import { DELETED_PHONE_PREFIX, phoneForClients } from './released-phone';
 import { holdsUnprovenPhone } from './unproven-phone';
 import { TokenPair, TokensService } from './tokens.service';
@@ -759,6 +760,46 @@ export class AuthService {
 
     if (mode === 'anonymize') {
       const scrubbed = await this.prisma.$transaction(async (tx) => {
+        // The person's number and address also sit outside their row (JOIN-03
+        // round 4, N16 and D7): in the sign-up code they were waiting for, in a
+        // pending phone change, and as the KEY of the text, mail and wrong-code
+        // counters and of a phone OTP. They are read before the scrub, then
+        // removed with it. The sign-up code row goes FIRST, the order the
+        // confirm routes take their locks in (the code row, then the account),
+        // so a confirm racing this deletion loses cleanly and never deadlocks:
+        // it finds its code row gone.
+        const before = await tx.wawuUser.findUnique({
+          where: { id: userId },
+          select: { email: true, phone: true, phoneVerifiedFor: true },
+        });
+        const signups = await tx.phoneVerification.findMany({
+          where: { userId },
+          select: { phone: true, claimEmail: true },
+        });
+        const changes = await tx.phoneChangeRequest.findMany({
+          where: { userId },
+          select: { newPhone: true },
+        });
+        const { keys, budgets } = erasedKeys({
+          phones: [
+            before?.phone,
+            before?.phoneVerifiedFor,
+            ...signups.map((s) => s.phone),
+            ...changes.map((c) => c.newPhone),
+          ],
+          emails: [before?.email, ...signups.map((s) => s.claimEmail)],
+        });
+        await tx.phoneVerification.deleteMany({ where: { userId } });
+        await tx.phoneChangeRequest.deleteMany({ where: { userId } });
+        if (keys.length > 0) {
+          await tx.rateCounter.deleteMany({ where: { key: { in: keys } } });
+          await tx.otpSession.deleteMany({ where: { phone: { in: keys } } });
+        }
+        if (budgets.length > 0) {
+          await tx.phoneGuessBudget.deleteMany({
+            where: { phone: { in: budgets } },
+          });
+        }
         const updated = await tx.wawuUser.update({
           where: { id: userId },
           data: {

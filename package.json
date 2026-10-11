@@ -25,6 +25,7 @@
     "test:phone-hold-local": "node test/phone-hold.local.mjs",
     "test:session-local": "node test/session-security.local.mjs",
     "test:refresh-local": "node test/refresh-lookup.local.mjs",
+    "test:g16-local": "node test/g16-duplicate-phones.local.mjs",
     "contract:build": "nest build && node dist/contract/emit-contract.js"
   },
   "dependencies": {

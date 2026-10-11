@@ -36,15 +36,24 @@
 // same table. Neither touches any other column (updated_at included), so
 // a revert leaves every row byte for byte as it was. `report` prints ids and
 // masked numbers only.
+//
+// `revert` puts a row back ONLY WHILE IT STILL READS `released:<its id>`
+// (JOIN-03 round 4, D6), for `phone` and `phone_verified_for` alike. A row that
+// reads anything else has moved on since `apply`: the Hub finalised its
+// deletion (`deleted:<id>`), or it was given another number. It is left exactly
+// as it is, counted and listed by id in the output, so a revert never returns a
+// deleted person's number to the table. The two g16_ tables hold the old
+// numbers until `revert` drops them (that is how it knows what to restore).
 import { createRequire } from 'node:module';
 import pg from 'pg';
 
 const require = createRequire(import.meta.url);
 let normalisePhone;
 let revertClashes;
+let stillReleased;
 try {
   ({ normalisePhone } = require('../../dist/common/phone.util.js'));
-  ({ revertClashes } = require('../../dist/auth/g16-revert.js'));
+  ({ revertClashes, stillReleased } = require('../../dist/auth/g16-revert.js'));
 } catch {
   console.error(
     'Run `npm run build` first: this uses dist/common/phone.util.js.',
@@ -196,7 +205,10 @@ try {
     const { rows: live } = await client.query(
       'SELECT id, phone FROM wawu_users',
     );
-    const clashes = revertClashes(rows, members, live, normalisePhone);
+    // Only a row that still reads `released:<its id>` is a candidate (D6): the
+    // others are left alone, and a number they once held cannot clash.
+    const { restore, left } = stillReleased(rows, live);
+    const clashes = revertClashes(restore, members, live, normalisePhone);
     if (clashes.length) {
       await client.query('ROLLBACK');
       console.error(
@@ -204,16 +216,29 @@ try {
       );
       process.exitCode = 1;
     } else {
-      for (const r of rows) {
-        await client.query(
-          'UPDATE wawu_users SET phone = $2, phone_verified_for = $3 WHERE id = $1',
+      let restored = 0;
+      for (const r of restore) {
+        // The WHERE repeats the test, so a row changed since the read above
+        // (a deletion finalised meanwhile) is skipped too, never overwritten.
+        const done = await client.query(
+          `UPDATE wawu_users SET phone = $2, phone_verified_for = $3
+            WHERE id = $1 AND phone = 'released:' || id::text`,
           [r.user_id, r.old_phone, r.old_verified_for],
         );
+        if (done.rowCount === 1) restored += 1;
+        else left.push(r);
       }
       await client.query('DROP TABLE g16_phone_releases');
       await client.query('DROP TABLE g16_phone_members');
       await client.query('COMMIT');
-      console.log(`restored ${rows.length} row(s)`);
+      console.log(`restored ${restored} row(s)`);
+      if (left.length) {
+        console.log(
+          `left ${left.length} row(s) as they are (no longer released: deleted or given another number since apply): ${left
+            .map((r) => r.user_id)
+            .join(', ')}`,
+        );
+      }
     }
   }
 } catch (err) {
