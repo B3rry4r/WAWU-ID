@@ -202,13 +202,23 @@ export function fakePrisma() {
         Object.assign(row, data);
         return Promise.resolve(row);
       },
-      deleteMany: ({ where }: { where: { id: string } }) => {
-        const owner = users.find((u) => u.phoneVerification?.id === where.id);
-        if (!owner) return Promise.resolve({ count: 0 });
+      // By the code row's id (a confirm taking its row) or by its account
+      // (a path removing a pending sign-up deletes the code row first).
+      deleteMany: ({ where }: { where: { id?: string; userId?: string } }) => {
+        const owner = users.find((u) =>
+          where.id !== undefined
+            ? u.phoneVerification?.id === where.id
+            : u.phoneVerification !== null && u.id === where.userId,
+        );
+        if (!owner?.phoneVerification) return Promise.resolve({ count: 0 });
         owner.phoneVerification = null;
         return Promise.resolve({ count: 1 });
       },
     },
+    // `SELECT id FROM phone_verifications WHERE id = $1 FOR SHARE` (signup-still-there.ts):
+    // the row if it is there, nothing if it is not.
+    $queryRaw: (_strings: unknown, id: string) =>
+      Promise.resolve(codes().some((c) => c.id === id) ? [{ id }] : []),
     $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(api),
   };
   return api;

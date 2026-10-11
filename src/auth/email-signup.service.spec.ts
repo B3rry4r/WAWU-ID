@@ -34,6 +34,7 @@ const DATE_ONLY = [
 describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
   let prisma: ReturnType<typeof fakePrisma>;
   let mail: RecordingMail;
+  let limits: MemoryRateLimiter;
   let service: EmailSignupService;
   const sessionFor = jest.fn((user: Row) =>
     Promise.resolve({ accessToken: 'a', refreshToken: 'r', user }),
@@ -81,12 +82,13 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
   function build(env: Record<string, string> = {}) {
     prisma = fakePrisma();
     mail = new RecordingMail();
+    limits = new MemoryRateLimiter();
     sessionFor.mockClear();
     service = new EmailSignupService(
       prisma as never,
       { sessionFor } as unknown as AuthService,
       { get: (name: string) => ({ ...baseEnv, ...env })[name] } as never,
-      new MemoryRateLimiter(),
+      limits,
       mail as never,
     );
   }
@@ -580,6 +582,74 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
       prisma.users[0].status = 'active';
       expect((await confirm(attempt, code)).accessToken).toBe('a');
     });
+  });
+
+  // ── JOIN-03 round 5, D9: a confirm in flight when the Hub anonymises ───────
+
+  describe("a confirm that meets the Hub's anonymise writes no wrong-code budget back (D9)", () => {
+    const BUDGET = 'signup-email:ada@example.test';
+
+    /**
+     * The Hub's anonymise commits while this confirm is taking its guess: by
+     * the time the guess has landed, the code row is gone and the account is
+     * closed (the anonymise had already deleted the budget it would have found).
+     */
+    function anonymiseDuringTheGuess() {
+      limits.afterClaim = () => {
+        Object.assign(prisma.users[0], {
+          status: 'banned',
+          deletedAt: new Date(),
+          phone: 'deleted:u1',
+          email: null,
+        });
+        prisma.users[0].phoneVerification = null;
+      };
+    }
+
+    it('the right code loses the race (409) and leaves no budget row for the address', async () => {
+      const { attempt, code } = await begin();
+      anonymiseDuringTheGuess();
+      const body = await failure(confirm(attempt, code));
+      expect(body.code).toBe('EMAIL_ALREADY_CONFIRMED');
+      expect(sessionFor).not.toHaveBeenCalled();
+      expect(limits.hasGuesses(BUDGET)).toBe(false);
+    });
+
+    it('a wrong code leaves no budget row for the address either', async () => {
+      const { attempt, code } = await begin();
+      anonymiseDuringTheGuess();
+      const body = await failure(confirm(attempt, wrongCode(code)));
+      expect(body.code).toBe('EMAIL_CODE_INVALID');
+      expect(limits.hasGuesses(BUDGET)).toBe(false);
+    });
+
+    it('the control: with the sign-up still there, a wrong code keeps its place in the budget and the right code clears it', async () => {
+      const { attempt, code } = await begin();
+      await failure(confirm(attempt, wrongCode(code)));
+      expect(limits.hasGuesses(BUDGET)).toBe(true);
+      expect((await confirm(attempt, code)).accessToken).toBe('a');
+      expect(limits.hasGuesses(BUDGET)).toBe(false);
+    });
+  });
+
+  // ── JOIN-03 round 5, D8: a refused mail removes the sign-up code row first ──
+
+  it('removes a sign-up whose mail was refused code row first, then the account (the order every path that removes a pending sign-up locks in)', async () => {
+    const seen: string[] = [];
+    const code = prisma.phoneVerification.deleteMany;
+    prisma.phoneVerification.deleteMany = (arg: never) => {
+      seen.push('code');
+      return code(arg);
+    };
+    const account = prisma.wawuUser.deleteMany;
+    prisma.wawuUser.deleteMany = (arg: never) => {
+      seen.push('account');
+      return account(arg);
+    };
+    mail.failNext = true;
+    await failure(service.signup(signup, IP));
+    expect(seen).toEqual(['code', 'account']);
+    expect(prisma.users).toHaveLength(0);
   });
 
   // ── who may take an email or a phone ───────────────────────────────────────

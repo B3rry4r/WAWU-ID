@@ -143,9 +143,15 @@ describe('a phone is held only once it is proven', () => {
   });
 
   describe('applyClashPlan', () => {
-    it('removes the unconfirmed sign-ups in the way and writes to no other account', async () => {
+    const recorder = (codeRowsDeleted = 1) => {
       const calls: Array<[string, unknown]> = [];
       const client = {
+        phoneVerification: {
+          deleteMany: (arg: unknown) => {
+            calls.push(['code.deleteMany', arg]);
+            return Promise.resolve({ count: codeRowsDeleted });
+          },
+        },
         wawuUser: {
           deleteMany: (arg: unknown) => {
             calls.push(['deleteMany', arg]);
@@ -161,12 +167,50 @@ describe('a phone is held only once it is proven', () => {
           },
         },
       } as never;
+      return { calls, client };
+    };
+
+    it('removes the unconfirmed sign-ups in the way and writes to no other account', async () => {
+      const { calls, client } = recorder();
       await applyClashPlan(client, {
         remove: ['gone'],
         typedHolders: ['a1'],
         claimEmail: false,
       });
-      expect(calls).toEqual([['deleteMany', { where: { id: 'gone' } }]]);
+      expect(calls.map(([name]) => name)).not.toContain('updateMany');
+      expect(calls.map(([name]) => name)).not.toContain('update');
+      expect(calls).toEqual([
+        ['code.deleteMany', { where: { userId: 'gone' } }],
+        ['deleteMany', { where: { id: 'gone' } }],
+      ]);
+    });
+
+    it('takes the sign-up code row BEFORE the account, the order the anonymise and the confirm routes lock them in (JOIN-03 round 5, D8)', async () => {
+      const { calls, client } = recorder();
+      await applyClashPlan(client, {
+        remove: ['one', 'two'],
+        typedHolders: [],
+        claimEmail: false,
+      });
+      // each pending sign-up: its code row, then its account, and never the account first
+      expect(calls.map(([name, arg]) => [name, JSON.stringify(arg)])).toEqual([
+        ['code.deleteMany', '{"where":{"userId":"one"}}'],
+        ['deleteMany', '{"where":{"id":"one"}}'],
+        ['code.deleteMany', '{"where":{"userId":"two"}}'],
+        ['deleteMany', '{"where":{"id":"two"}}'],
+      ]);
+    });
+
+    it('leaves an account alone whose code row is already gone: it is no longer an unconfirmed sign-up (anonymised or confirmed since it was read)', async () => {
+      const { calls, client } = recorder(0);
+      await applyClashPlan(client, {
+        remove: ['gone'],
+        typedHolders: [],
+        claimEmail: false,
+      });
+      expect(calls).toEqual([
+        ['code.deleteMany', { where: { userId: 'gone' } }],
+      ]);
     });
   });
 
@@ -230,6 +274,44 @@ describe('a phone is held only once it is proven', () => {
       const prisma = world(pending);
       await take(prisma);
       expect(prisma.users.map((u) => u.id)).toEqual(['new']);
+    });
+
+    it("takes the pending holder's code row BEFORE its account (JOIN-03 round 5, D8)", async () => {
+      const pending = row({
+        phoneVerification: { id: 'c1' } as never,
+        emailVerified: false,
+      });
+      const prisma = world(pending);
+      const seen: string[] = [];
+      const code = prisma.phoneVerification.deleteMany;
+      prisma.phoneVerification.deleteMany = (arg: never) => {
+        seen.push('code');
+        return code(arg);
+      };
+      const account = prisma.wawuUser.deleteMany;
+      prisma.wawuUser.deleteMany = (arg: never) => {
+        seen.push('account');
+        return account(arg);
+      };
+      await take(prisma);
+      expect(seen).toEqual(['code', 'account']);
+      expect(prisma.users.map((u) => u.id)).toEqual(['new']);
+    });
+
+    it('leaves a holder whose code row is gone since it was read (the Hub anonymised it): the number is free and the row stays', async () => {
+      const pending = row({
+        phoneVerification: { id: 'c1' } as never,
+        emailVerified: false,
+      });
+      const prisma = world(pending);
+      // the anonymise got there first: the code row is already deleted, the row reads as a deleted account
+      prisma.phoneVerification.deleteMany = () => {
+        Object.assign(pending, { phone: 'deleted:a1', email: null });
+        return Promise.resolve({ count: 0 });
+      };
+      await take(prisma);
+      expect(prisma.users.map((u) => u.id)).toEqual(['a1', 'new']);
+      expect(pending.phone).toBe('deleted:a1');
     });
 
     it('refuses, and changes nothing, when the number is proven', async () => {

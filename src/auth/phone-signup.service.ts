@@ -22,6 +22,7 @@ import {
   type PhoneVerificationConfig,
 } from './phone-verification.config';
 import { RateLimiter } from './rate-limiter.service';
+import { signupStillThere } from './signup-still-there';
 import { releasedPhoneFor } from './released-phone';
 import {
   applyClashPlan,
@@ -423,6 +424,13 @@ export class PhoneSignupService {
       dailyCap: this.settings.dailyWrongCap,
     });
     if (!claim.allowed) throw this.locked(claim.retryAfterSeconds);
+    // The Hub may have anonymised the account since the sign-up was read: the
+    // guess just taken is then a budget row for a closed account's number, which
+    // nothing else removes. Take it back; the answer is whatever it would have
+    // been (D9).
+    if (!(await signupStillThere(this.prisma, pending.id))) {
+      await this.limits.clearGuesses(phone);
+    }
 
     const live = pending.expiresAt > new Date();
     const right = await argon2.verify(
