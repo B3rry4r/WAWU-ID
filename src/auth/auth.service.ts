@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -18,7 +19,8 @@ import {
   type VerificationState,
   type VerificationTickName,
 } from '../common/verification.util';
-import { MailService } from '../mail/mail.service';
+import { MailSendError, MailService } from '../mail/mail.service';
+import { parseMoneyCheckReport } from '../mail/money-check-report';
 import { OtpService } from '../otp/otp.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActivateDto } from './dto/activate.dto';
@@ -1237,6 +1239,48 @@ export class AuthService {
       hoursLeft,
       planUrl,
     );
+    return { emailed: true };
+  }
+
+  /**
+   * The nightly money check's report, mailed to the one person the Hub names
+   * (task MONEY-16, BACKEND_GAPS G-690). Same split as the other internal
+   * mails: the Hub names the user and gives the facts, this service owns the
+   * address and the wording, and a body that carries anything but counts,
+   * references and amounts is refused (`parseMoneyCheckReport`).
+   *
+   * Unlike the other two, a mail that was not sent is never a 200: the Hub
+   * keeps a report until WAWU ID has taken it, and "nothing sent" read as
+   * "sent" would lose the one alert that says money is not where it should be.
+   * So: 400 for a body it will not take, 404 for no such account, 409 for an
+   * account with no verified email address (the address is the account's
+   * own; nothing else is ever mailed), 503 when the mailer could not hand the
+   * mail on. Only a proven address is used: `emailVerified`, and the address
+   * of an account that has been anonymised or deleted is gone.
+   */
+  async sendMoneyCheckReport(
+    userId: string,
+    body: unknown,
+  ): Promise<{ emailed: true }> {
+    const report = parseMoneyCheckReport(body);
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true, emailVerified: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (!user.email || !user.emailVerified) {
+      throw new ConflictException(
+        'This account has no verified email address to send the report to.',
+      );
+    }
+    try {
+      await this.mail.sendMoneyCheckReport(user.email, user.firstName, report);
+    } catch (err) {
+      if (!(err instanceof MailSendError)) throw err;
+      throw new ServiceUnavailableException(
+        'The report could not be handed to the mailer. Try again.',
+      );
+    }
     return { emailed: true };
   }
 
