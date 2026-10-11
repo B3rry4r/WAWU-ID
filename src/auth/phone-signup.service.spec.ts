@@ -35,6 +35,7 @@ const DATE_ONLY = [
 describe('PhoneSignupService', () => {
   let prisma: ReturnType<typeof fakePrisma>;
   let sms: RecordingSmsProvider;
+  let limits: MemoryRateLimiter;
   let service: PhoneSignupService;
   const sessionFor = jest.fn((user: Row) =>
     Promise.resolve({ accessToken: 'a', refreshToken: 'r', user }),
@@ -84,6 +85,7 @@ describe('PhoneSignupService', () => {
   function build(env: Record<string, string> = {}) {
     prisma = fakePrisma();
     sms = new RecordingSmsProvider();
+    limits = new MemoryRateLimiter();
     sessionFor.mockClear();
     sendOtpCode.mockClear();
     service = new PhoneSignupService(
@@ -91,7 +93,7 @@ describe('PhoneSignupService', () => {
       { sessionFor } as unknown as AuthService,
       { get: (name: string) => ({ ...baseEnv, ...env })[name] } as never,
       sms,
-      new MemoryRateLimiter(),
+      limits,
       { sendOtpCode } as never,
     );
   }
@@ -466,6 +468,61 @@ describe('PhoneSignupService', () => {
       const { attempt, code } = await begin();
       prisma.users[0].status = 'active';
       expect((await confirm(attempt, code)).accessToken).toBe('a');
+    });
+  });
+
+  // ── JOIN-03 round 5, D9: a confirm in flight when the Hub anonymises ───────
+
+  describe("a confirm that meets the Hub's anonymise writes no wrong-code budget back (D9)", () => {
+    /**
+     * The Hub's anonymise commits while this confirm is taking its guess: by
+     * the time the guess has landed, the code row is gone and the account is
+     * closed (the anonymise had already deleted the budget it would have found).
+     */
+    function anonymiseDuringTheGuess() {
+      limits.afterClaim = () => {
+        Object.assign(prisma.users[0], {
+          status: 'banned',
+          deletedAt: new Date(),
+          phone: 'deleted:u1',
+          email: null,
+        });
+        prisma.users[0].phoneVerification = null;
+      };
+    }
+
+    it('the right code loses the race (409) and leaves no budget row for the number', async () => {
+      const { attempt, code } = await begin();
+      anonymiseDuringTheGuess();
+      const body = await failure(confirm(attempt, code));
+      expect(body.code).toBe('PHONE_ALREADY_CONFIRMED');
+      expect(sessionFor).not.toHaveBeenCalled();
+      expect(limits.hasGuesses(PHONE)).toBe(false);
+    });
+
+    it('a wrong code leaves no budget row for the number either', async () => {
+      const { attempt, code } = await begin();
+      anonymiseDuringTheGuess();
+      const body = await failure(confirm(attempt, wrongCode(code)));
+      expect(body.code).toBe('PHONE_CODE_INVALID');
+      expect(limits.hasGuesses(PHONE)).toBe(false);
+    });
+
+    it('every wrong code of a sign-up closed meanwhile leaves nothing, so none of them counts toward a wait', async () => {
+      const { attempt, code } = await begin();
+      anonymiseDuringTheGuess();
+      for (let i = 0; i < 3; i++) {
+        await failure(confirm(attempt, wrongCode(code)));
+      }
+      expect(limits.hasGuesses(PHONE)).toBe(false);
+    });
+
+    it('the control: with the sign-up still there, a wrong code keeps its place in the budget and the right code clears it', async () => {
+      const { attempt, code } = await begin();
+      await failure(confirm(attempt, wrongCode(code)));
+      expect(limits.hasGuesses(PHONE)).toBe(true);
+      expect((await confirm(attempt, code)).accessToken).toBe('a');
+      expect(limits.hasGuesses(PHONE)).toBe(false);
     });
   });
 

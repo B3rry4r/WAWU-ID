@@ -73,7 +73,19 @@ export class MemoryRateLimiter extends RateLimiter {
     return Promise.resolve();
   }
 
+  /**
+   * Runs once a guess has been taken, before it is answered: a spec's way to
+   * let something happen to the account while a confirm is in flight.
+   */
+  afterClaim: (() => void) | null = null;
+
   claimGuess(phone: string, rules: GuessRules): Promise<GuessClaim> {
+    const out = this.takeGuess(phone, rules);
+    this.afterClaim?.();
+    return out;
+  }
+
+  private takeGuess(phone: string, rules: GuessRules): Promise<GuessClaim> {
     const now = Date.now();
     const g = this.guesses.get(phone) ?? {
       run: 0,
@@ -112,5 +124,10 @@ export class MemoryRateLimiter extends RateLimiter {
   clearGuesses(phone: string): Promise<void> {
     this.guesses.delete(phone);
     return Promise.resolve();
+  }
+
+  /** Is there a wrong-code budget row for this key (a spec reads what a request left behind)? */
+  hasGuesses(phone: string): boolean {
+    return this.guesses.has(phone);
   }
 }

@@ -26,6 +26,7 @@ import {
   type SignupStarted,
 } from './phone-signup.service';
 import { RateLimiter } from './rate-limiter.service';
+import { signupStillThere } from './signup-still-there';
 import { releasedPhoneFor } from './released-phone';
 import {
   applyClashPlan,
@@ -416,6 +417,13 @@ export class EmailSignupService {
       dailyCap: this.settings.dailyWrongCap,
     });
     if (!claim.allowed) throw this.locked(claim.retryAfterSeconds);
+    // The Hub may have anonymised the account since the sign-up was read: the
+    // guess just taken is then a budget row for a closed account's address, which
+    // nothing else removes. Take it back; the answer is whatever it would have
+    // been (D9).
+    if (!(await signupStillThere(this.prisma, pending.id))) {
+      await this.limits.clearGuesses(budget);
+    }
 
     const live = pending.expiresAt > new Date();
     const right = await argon2.verify(
@@ -659,8 +667,13 @@ export class EmailSignupService {
    */
   private async discard(userId: string): Promise<void> {
     try {
-      await this.prisma.wawuUser.deleteMany({
-        where: { id: userId, emailVerified: false, phoneVerifiedAt: null },
+      // The code row first, then the account, like every other path that
+      // removes a pending sign-up (JOIN-03 round 5, D8).
+      await this.prisma.$transaction(async (tx) => {
+        await tx.phoneVerification.deleteMany({ where: { userId } });
+        await tx.wawuUser.deleteMany({
+          where: { id: userId, emailVerified: false, phoneVerifiedAt: null },
+        });
       });
     } catch (err) {
       this.logger.error(
