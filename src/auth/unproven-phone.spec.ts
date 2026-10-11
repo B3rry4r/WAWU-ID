@@ -252,6 +252,23 @@ describe('a phone is held only once it is proven', () => {
       expect(typed.phone).toBe(PHONE);
     });
 
+    it("D3: refuses as taken, and leaves the holder its NEW number, when the holder's number changed between the read and the write", async () => {
+      const typed = row();
+      const prisma = world(typed);
+      prisma.progress.push('a1');
+      // the holder moves to another number in the very moment between the
+      // lookup and the guarded write: that number is not the one proven
+      const moved = '+2348099900055';
+      const real = prisma.wawuUser.updateMany;
+      prisma.wawuUser.updateMany = (arg: never) => {
+        typed.phone = moved;
+        return real(arg);
+      };
+      await expect(take(prisma)).rejects.toBeInstanceOf(ConflictException);
+      expect(typed.phone).toBe(moved);
+      expect(typed.phone).not.toBe('released:a1');
+    });
+
     it('never touches the account that is taking the number', async () => {
       const prisma = world();
       await take(prisma);
