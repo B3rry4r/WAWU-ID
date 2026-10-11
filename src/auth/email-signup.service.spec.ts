@@ -7,6 +7,7 @@ import {
 } from '../testing/fake-signup-prisma';
 import { MemoryRateLimiter } from '../testing/memory-rate-limiter';
 import { RecordingMail } from '../testing/recording-mail';
+import { MailSendError } from '../mail/mail.service';
 import { AuthService } from './auth.service';
 import { EmailSignupService } from './email-signup.service';
 
@@ -704,6 +705,27 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
       expect(mail.sent).toHaveLength(2);
       expect(limits.hasCounter('signup-mail-gap', ADDRESS)).toBe(true);
       expect(limits.hasCounter('signup-mail-day', ADDRESS)).toBe(true);
+    });
+
+    it('a resend whose mail is refused after the anonymise still answers 503, not a server error (the code it put back has no row to go to)', async () => {
+      const { attempt } = await begin();
+      later(61);
+      // the sign-up is there when the new code is stored, and gone when the refused mail asks for the old code back
+      mail.sendOtpCode = () => {
+        Object.assign(prisma.users[0], {
+          status: 'banned',
+          deletedAt: new Date(),
+          phone: 'deleted:u1',
+          email: null,
+        });
+        prisma.users[0].phoneVerification = null;
+        return Promise.reject(new MailSendError('refused'));
+      };
+      const body = await failure(service.start(PHONE, attempt, IP));
+      expect(body).toMatchObject({
+        statusCode: 503,
+        code: 'EMAIL_SEND_FAILED',
+      });
     });
   });
 
