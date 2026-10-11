@@ -15,3 +15,12 @@ export function phoneForClients(stored: string): string {
     ? ''
     : stored;
 }
+
+/**
+ * What the phone column holds for an account that gave its number up (G-16's
+ * script, and AUTH-07 round 2: a newer sign-up took a number the account had
+ * only typed). Unique per account, so the column's unique index is not hit.
+ */
+export function releasedPhoneFor(userId: string): string {
+  return `${RELEASED_PHONE_PREFIX}${userId}`;
+}

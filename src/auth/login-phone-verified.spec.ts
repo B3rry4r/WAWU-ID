@@ -129,10 +129,31 @@ describe('login: unverified email', () => {
       });
       expect(out.accessToken).toBe('a');
       expect(findFirst).toHaveBeenCalledTimes(2);
+      // AUTH-07: also an account that proved its EMAIL at a mailed sign-up
+      // (it has a signup_progress row; its phone was never proven).
       expect((findFirst.mock.calls as unknown[][])[1][0]).toEqual({
-        where: { phone: '+2348031234412', phoneVerifiedAt: { not: null } },
+        where: {
+          phone: '+2348031234412',
+          OR: [
+            { phoneVerifiedAt: { not: null } },
+            { signupProgress: { isNot: null } },
+          ],
+        },
         include: { phoneVerification: true },
       });
+    });
+
+    it('lets an account that proved its email at a mailed sign-up sign in with its phone typed the local way', async () => {
+      const { service, findFirst } = build({
+        emailVerified: true,
+        phoneVerifiedAt: null,
+      });
+      findFirst.mockResolvedValueOnce(null);
+      const out = await service.login({
+        identifier: '0803 123 4412',
+        password,
+      });
+      expect(out.accessToken).toBe('a');
     });
 
     it('keeps the exact lookup first, so a legacy row is found exactly as before', async () => {

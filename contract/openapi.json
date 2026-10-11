@@ -47,7 +47,7 @@
             }
           },
           "429": {
-            "description": "PHONE_CODE_RESEND_TOO_SOON, RATE_LIMITED.",
+            "description": "PHONE_CODE_RESEND_TOO_SOON (texted), EMAIL_CODE_RESEND_TOO_SOON (mailed), RATE_LIMITED.",
             "content": {
               "application/json": {
                 "schema": {
@@ -57,7 +57,7 @@
             }
           },
           "503": {
-            "description": "SMS_NOT_CONFIGURED, SMS_SEND_FAILED.",
+            "description": "SMS_NOT_CONFIGURED, SMS_SEND_FAILED (texted); EMAIL_NOT_CONFIGURED, EMAIL_SEND_FAILED (mailed).",
             "content": {
               "application/json": {
                 "schema": {
@@ -67,7 +67,7 @@
             }
           }
         },
-        "summary": "A3: create the account and text a code to the phone. No session yet (R-36).",
+        "summary": "A3: create the account and send a 6-digit code: texted to the phone by default, mailed to the email when SIGNUP_VERIFY_CHANNEL is email (R-39; the answer then carries `channel: email`). No session yet (R-36). A number another account only typed is not taken from it by a sign-up that proves nothing: a mailed sign-up goes ahead without the number (`phoneNotSaved: true`), and a texted one takes it when its code proves it.",
         "tags": [
           "Auth",
           "app"
@@ -109,6 +109,16 @@
               }
             }
           },
+          "409": {
+            "description": "SIGNUP_CHANNEL_DISABLED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "429": {
             "description": "PHONE_CODE_RESEND_TOO_SOON, RATE_LIMITED.",
             "content": {
@@ -130,7 +140,7 @@
             }
           }
         },
-        "summary": "A4: send another code. The same answer for any number and secret; only a live sign-up is texted.",
+        "summary": "A4 (texted sign-up): send another code. The same answer for any number and secret; only a live sign-up is texted. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are mailed.",
         "tags": [
           "Auth",
           "app"
@@ -173,7 +183,7 @@
             }
           },
           "409": {
-            "description": "PHONE_ALREADY_CONFIRMED, or the email or phone was taken meanwhile.",
+            "description": "PHONE_ALREADY_CONFIRMED, SIGNUP_CHANNEL_DISABLED, or the email or phone was taken meanwhile.",
             "content": {
               "application/json": {
                 "schema": {
@@ -193,7 +203,7 @@
             }
           }
         },
-        "summary": "A4: check the texted code (and the mailed one when sign-up asked for it). Right: the first session.",
+        "summary": "A4 (texted sign-up): check the texted code (and the mailed one when sign-up asked for it). Right: the first session. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are mailed.",
         "tags": [
           "Auth",
           "app"
@@ -500,6 +510,28 @@
         ]
       }
     },
+    "/auth/signup/channel": {
+      "get": {
+        "operationId": "signupChannel",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupChannelAnswer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "A3: which way the sign-up code will travel, so its line can name it: `phone` (texted, the default) or `email` (mailed, SIGNUP_VERIFY_CHANNEL=email). Needs no sign-in, reads no account and sends nothing.",
+        "tags": [
+          "app"
+        ]
+      }
+    },
     "/auth/signup/resume": {
       "post": {
         "operationId": "signupResume",
@@ -546,7 +578,141 @@
             }
           }
         },
-        "summary": "Where a sign-up stands before its phone code, for an app that was closed between A3 and A4. Sends nothing.",
+        "summary": "Where a sign-up stands before its code (texted by default, mailed with SIGNUP_VERIFY_CHANNEL=email), for an app that was closed between A3 and A4. Sends nothing. A sign-up whose code went by the other channel answers `details`.",
+        "tags": [
+          "app"
+        ]
+      }
+    },
+    "/auth/signup/email-code/start": {
+      "post": {
+        "operationId": "signupEmailCodeStart",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupEmailCodeStartDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSignupCodeSentAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation, PHONE_INVALID, PHONE_NOT_SUPPORTED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SIGNUP_CHANNEL_DISABLED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "EMAIL_CODE_RESEND_TOO_SOON, RATE_LIMITED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "EMAIL_NOT_CONFIGURED, EMAIL_SEND_FAILED (the mail was not handed over: no wait was started and the code that was live still works).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "A4 (mailed sign-up, SIGNUP_VERIFY_CHANNEL=email): mail another code. The same answer for any number and secret; only a live sign-up is mailed, and when Resend refuses it the answer is 503 EMAIL_SEND_FAILED (the code that was live keeps working). Answers 409 SIGNUP_CHANNEL_DISABLED while codes are texted.",
+        "tags": [
+          "app"
+        ]
+      }
+    },
+    "/auth/signup/email-code/confirm": {
+      "post": {
+        "operationId": "signupEmailCodeConfirm",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupEmailCodeConfirmDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation, EMAIL_CODE_INVALID (also for a secret that is not live: restart sign-up after the fourth 400 in a row).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "EMAIL_ALREADY_CONFIRMED, SIGNUP_CHANNEL_DISABLED, or the email or phone was taken meanwhile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "EMAIL_CODE_LOCKED, RATE_LIMITED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "summary": "A4 (mailed sign-up, SIGNUP_VERIFY_CHANNEL=email): check the mailed code. Right: the email is proven and the first session is issued. Answers 409 SIGNUP_CHANNEL_DISABLED while codes are texted.",
         "tags": [
           "app"
         ]
@@ -860,11 +1026,29 @@
           },
           "attempt": {
             "type": "string",
-            "description": "Shown once. Keep it with the sign-up (it survives the app closing) and send it on every phone/verify and resume call."
+            "description": "Shown once. Keep it with the sign-up (it survives the app closing) and send it on every code and resume call."
           },
           "emailCodeRequired": {
             "type": "boolean",
-            "description": "The confirm call must also carry `emailCode`, the code mailed to the email."
+            "description": "Texted sign-up only: the confirm call must also carry `emailCode`, the code mailed to the email. Always false when the code was mailed."
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email"
+            ],
+            "description": "`email`: the code was mailed (`SIGNUP_VERIFY_CHANNEL=email`, DECISIONS R-39): send it to `signup/email-code/*`. Absent: the code was texted (the default): `phone/verify/*`."
+          },
+          "maskedEmail": {
+            "type": "string",
+            "description": "With `channel: email`: where the code went, written a•••@example.com. Show it on A4."
+          },
+          "phoneNotSaved": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "With `channel: email`, present (true) only when the phone number typed was NOT saved to the account because another account holds it. The account is made without a phone; say so on A4 in plain words. The person adds and proves a phone later (BACKEND_GAPS G-222)."
           }
         },
         "required": [
@@ -915,6 +1099,10 @@
               "EMAIL_CODE_INVALID",
               "EMAIL_CODE_LOCKED",
               "EMAIL_CODE_RESEND_TOO_SOON",
+              "EMAIL_ALREADY_CONFIRMED",
+              "EMAIL_NOT_CONFIGURED",
+              "EMAIL_SEND_FAILED",
+              "SIGNUP_CHANNEL_DISABLED",
               "CURRENT_PASSWORD_WRONG",
               "PASSWORD_UNCHANGED",
               "PASSWORD_NOT_SET"
@@ -1305,6 +1493,33 @@
           "data"
         ]
       },
+      "SignupChannelSchema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "phone",
+              "email"
+            ],
+            "description": "Where the sign-up code will go: `phone` (texted, the default) or `email` (mailed). It is the SIGNUP_VERIFY_CHANNEL setting as WAWU ID reads it. A3 words its line by it; A4 then names the channel the sign-up answer carries."
+          }
+        },
+        "required": [
+          "channel"
+        ]
+      },
+      "SignupChannelAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SignupChannelSchema"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
       "SignupResumeDto": {
         "type": "object",
         "properties": {
@@ -1360,6 +1575,24 @@
             ],
             "nullable": true,
             "description": "With `phone`: the account type sent with the sign-up."
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email"
+            ],
+            "description": "With `phone`: `email` when the code was mailed (use `signup/email-code/*`); absent when it was texted. The step is named `phone` whichever way the code travels."
+          },
+          "maskedEmail": {
+            "type": "string",
+            "description": "With `channel: email`: where the code went, written a•••@example.com."
+          },
+          "phoneNotSaved": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "With `channel: email`, present (true) only when the account was made without the phone number typed, because another account holds it. Say so on A4, as the sign-up answer did."
           }
         },
         "required": [
@@ -1375,6 +1608,93 @@
         },
         "required": [
           "data"
+        ]
+      },
+      "SignupEmailCodeStartDto": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "minLength": 7,
+            "maxLength": 25,
+            "description": "The number as `POST /auth/signup` answered it."
+          },
+          "attempt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "The secret `POST /auth/signup` returned for this sign-up."
+          }
+        },
+        "required": [
+          "phone",
+          "attempt"
+        ]
+      },
+      "EmailSignupCodeSentSchema": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "The number as stored (+234...)."
+          },
+          "expiresIn": {
+            "type": "number",
+            "description": "Seconds the code can be used for."
+          },
+          "resendIn": {
+            "type": "number",
+            "description": "Seconds until another code can be asked for."
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email"
+            ]
+          }
+        },
+        "required": [
+          "phone",
+          "expiresIn",
+          "resendIn",
+          "channel"
+        ]
+      },
+      "EmailSignupCodeSentAnswer": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/EmailSignupCodeSentSchema"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "SignupEmailCodeConfirmDto": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "minLength": 7,
+            "maxLength": 25,
+            "description": "The number as `POST /auth/signup` answered it."
+          },
+          "attempt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "The secret `POST /auth/signup` returned for this sign-up."
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$"
+          }
+        },
+        "required": [
+          "phone",
+          "attempt",
+          "code"
         ]
       },
       "SignupProgressSchema": {

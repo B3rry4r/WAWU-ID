@@ -27,6 +27,7 @@ import { RegisterDto } from './dto/register.dto';
 import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { phoneForClients } from './released-phone';
+import { holdsUnprovenPhone } from './unproven-phone';
 import { TokenPair, TokensService } from './tokens.service';
 
 export interface UserResponse {
@@ -147,13 +148,18 @@ export class AuthService {
    */
   private refuseIfPending(user: {
     phoneVerifiedAt: Date | null;
-    phoneVerification?: unknown;
+    phoneVerification?: { channel?: string | null } | null;
   }): void {
     if (!user.phoneVerifiedAt && user.phoneVerification) {
       throw new ForbiddenException({
         statusCode: 403,
         code: 'PHONE_NOT_CONFIRMED',
-        message: 'Confirm your phone number to finish signing up.',
+        // The code is the same either way (the contract names it); the
+        // sentence says where the code went (AUTH-07).
+        message:
+          user.phoneVerification.channel === 'email'
+            ? 'Enter the code we emailed you to finish signing up.'
+            : 'Confirm your phone number to finish signing up.',
       });
     }
   }
@@ -256,7 +262,15 @@ export class AuthService {
       const normalised = normalisePhone(dto.identifier);
       if (normalised) {
         user = await this.prisma.wawuUser.findFirst({
-          where: { phone: normalised, phoneVerifiedAt: { not: null } },
+          where: {
+            phone: normalised,
+            // A phone-verified account, or one that proved its email at a
+            // mailed sign-up (AUTH-07; it is in the sign-up sequence).
+            OR: [
+              { phoneVerifiedAt: { not: null } },
+              { signupProgress: { isNot: null } },
+            ],
+          },
           include: { phoneVerification: true },
         });
       }
@@ -831,8 +845,13 @@ export class AuthService {
     // Find or create a phone-only user (e.g. WAWUBasket-style signup).
     const existing = await this.prisma.wawuUser.findUnique({
       where: { phone },
-      include: { phoneVerification: true },
+      include: { phoneVerification: true, signupProgress: true },
     });
+    // A code for a number the account only typed at sign-up does not sign in
+    // to that account: the code shows who holds the number, not who holds it.
+    if (existing && holdsUnprovenPhone(existing)) {
+      throw new UnauthorizedException('Invalid or expired OTP');
+    }
     if (existing) this.refuseIfPending(existing);
     let user: WawuUser | null = existing;
     if (!user) {
@@ -965,6 +984,7 @@ export class AuthService {
           { phone: identifier.trim() },
         ],
       },
+      include: { signupProgress: true },
     });
 
     if (user) {
@@ -991,8 +1011,10 @@ export class AuthService {
         // route group, which Next.js strips from the URL (/auth/... 404s).
         const resetUrl = `${appUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
         await this.mail.sendPasswordReset(user.email, resetUrl, user.firstName);
-      } else if (phoneForClients(user.phone)) {
-        // Mobile apps: send a 6-digit reset code over WhatsApp.
+      } else if (phoneForClients(user.phone) && !holdsUnprovenPhone(user)) {
+        // Mobile apps: send a 6-digit reset code over WhatsApp. Not to a
+        // number the account only typed at sign-up: whoever holds that number
+        // has not been shown to be who holds the account.
         await this.otp.generateAndSend(user.phone);
       }
     }
@@ -1033,10 +1055,11 @@ export class AuthService {
           { phone: identifier.trim() },
         ],
       },
-      include: { phoneVerification: true },
+      include: { phoneVerification: true, signupProgress: true },
     });
     // Same error whether the user or the code is wrong — never leak existence.
-    if (!user) {
+    // A number the account only typed at sign-up is not a way to reset it.
+    if (!user || holdsUnprovenPhone(user)) {
       throw new UnauthorizedException('Invalid or expired reset code');
     }
 

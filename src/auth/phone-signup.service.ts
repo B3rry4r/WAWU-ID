@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { PhoneVerification, WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { createHash, randomBytes, randomInt } from 'crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'crypto';
 import { normalisePhone, phoneVariants } from '../common/phone.util';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,6 +21,14 @@ import {
   type PhoneVerificationConfig,
 } from './phone-verification.config';
 import { RateLimiter } from './rate-limiter.service';
+import { releasedPhoneFor } from './released-phone';
+import {
+  applyClashPlan,
+  numberHeld,
+  planClashes,
+  SAME_ACCOUNT,
+  takeProvenNumber,
+} from './unproven-phone';
 import {
   signupSequenceConfig,
   type SignupSequenceConfig,
@@ -56,6 +64,19 @@ export type SignupResume =
       emailCodeRequired: boolean;
       /** 'user' or 'creator' as sent with the sign-up, or null. */
       accountType: string | null;
+      /**
+       * `email` when the code was mailed (AUTH-07, SIGNUP_VERIFY_CHANNEL
+       * `email`); absent when it was texted, so a texted sign-up's answer is
+       * what it always was.
+       */
+      channel?: 'email';
+      /** With `channel: 'email'`: where the code went, written a•••@example.com. */
+      maskedEmail?: string;
+      /**
+       * With `channel: 'email'`: true when the account was made without the
+       * number typed, because another account holds it (AUTH-07 round 3).
+       */
+      phoneNotSaved?: true;
     }
   | { step: 'details' };
 
@@ -71,7 +92,7 @@ export interface SignupStarted extends PhoneCodeSent {
   emailCodeRequired: boolean;
 }
 
-function problem(
+export function problem(
   status: number,
   code: string,
   message: string,
@@ -90,8 +111,6 @@ function problem(
 
 const WRONG_CODE = () =>
   problem(400, 'PHONE_CODE_INVALID', "That code isn't right");
-
-const SAME_ACCOUNT = 'An account with this email or phone already exists';
 
 /** A hash to check against when there is nothing real to check, so the work is the same. */
 let dummyHash: Promise<string> | undefined;
@@ -207,6 +226,7 @@ export class PhoneSignupService {
     const emailCodeHash = await argon2.hash(emailCode);
     const now = new Date();
     const variants = phoneVariants(phone);
+    const id = randomUUID();
     let claim = false;
 
     try {
@@ -214,33 +234,24 @@ export class PhoneSignupService {
         claim = false;
         const clashes = await tx.wawuUser.findMany({
           where: { OR: [{ email }, { phone: { in: variants } }] },
-          include: { phoneVerification: true },
+          include: { phoneVerification: true, signupProgress: true },
         });
-        for (const other of clashes) {
-          if (other.phoneVerification && !other.phoneVerifiedAt) {
-            // An unproven sign-up holds nothing: a newer sign-up takes its
-            // email and phone, and it is gone, together with its secret.
-            await tx.wawuUser.deleteMany({ where: { id: other.id } });
-          } else if (
-            other.email === email &&
-            !variants.includes(other.phone) &&
-            other.phoneVerifiedAt &&
-            !other.emailVerified
-          ) {
-            // A mobile account holds this email without having proven it. It
-            // keeps the email: nothing is taken from it here. This sign-up
-            // gets the email only if its person also enters the code mailed
-            // to it (see confirm).
-            claim = true;
-          } else {
-            throw new ConflictException(SAME_ACCOUNT);
-          }
-        }
+        // What is in the way is decided first and changed after, so a sign-up
+        // refused for one clash changes nothing for another. A number an
+        // account only typed is not taken here: this sign-up holds none yet,
+        // and takes it if its person proves it by the code texted to it (see
+        // confirm, and unproven-phone.ts).
+        const plan = planClashes(clashes, email, variants);
+        claim = plan.claimEmail;
+        await applyClashPlan(tx, plan);
 
         await tx.wawuUser.create({
           data: {
+            id,
             email: claim ? null : email,
-            phone,
+            // The sign-up row below keeps the number typed; the account holds
+            // it from the moment the code proves it when somebody else does now.
+            phone: numberHeld(plan) ? releasedPhoneFor(id) : phone,
             passwordHash,
             occupation: dto.occupation?.trim() || null,
             accountType: dto.accountType ?? null,
@@ -459,6 +470,14 @@ export class PhoneSignupService {
             data: { email: null },
           });
         }
+        // This sign-up was made without its number because an account that only
+        // typed it held it. The right code proves the number, so it changes
+        // hands now, here and nowhere earlier: that account keeps everything
+        // but the number.
+        const takesNumber = pending.user.phone !== pending.phone;
+        if (takesNumber) {
+          await takeProvenNumber(tx, pending.userId, phoneVariants(phone));
+        }
         return tx.wawuUser.update({
           where: { id: pending.userId },
           data: {
@@ -466,6 +485,7 @@ export class PhoneSignupService {
             // only while the account still holds it (JOIN-03 round 2, D1).
             phoneVerifiedFor: pending.phone,
             phoneVerifiedAt: new Date(),
+            ...(takesNumber ? { phone: pending.phone } : {}),
             ...(pending.claimEmail ? { email: pending.claimEmail } : {}),
           },
         });
@@ -606,7 +626,11 @@ export class PhoneSignupService {
     };
   }
 
-  /** The pending sign-up this secret belongs to, if it is for this number, not proven and not expired. */
+  /**
+   * The pending sign-up this secret belongs to, if it is for this number, not
+   * proven and not expired. A sign-up whose code was mailed (AUTH-07,
+   * `channel` 'email') is not a phone sign-up: these routes never act on it.
+   */
   private async findByAttempt(
     phone: string,
     attempt: string,
@@ -619,6 +643,7 @@ export class PhoneSignupService {
       !row ||
       row.user.phoneVerifiedAt ||
       row.phone !== phone ||
+      row.channel === 'email' ||
       row.signupExpiresAt <= new Date()
     ) {
       return null;

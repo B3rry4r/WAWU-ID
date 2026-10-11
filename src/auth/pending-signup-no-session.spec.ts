@@ -54,9 +54,15 @@ describe('a pending mobile sign-up holds no session', () => {
     ...over,
   });
 
-  function build(pending: boolean, row = user()) {
+  function build(
+    pending: boolean,
+    row = user(),
+    channel: string | null = null,
+  ) {
     const refreshHash = argon2.hash('refresh-token');
-    const found = pending ? { ...row, phoneVerification: { id: 'pv1' } } : row;
+    const found = pending
+      ? { ...row, phoneVerification: { id: 'pv1', channel } }
+      : row;
     const prisma = {
       wawuUser: {
         findFirst: jest.fn().mockResolvedValue(found),
@@ -66,7 +72,9 @@ describe('a pending mobile sign-up holds no session', () => {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       phoneVerification: {
-        findUnique: jest.fn().mockResolvedValue(pending ? { id: 'pv1' } : null),
+        findUnique: jest
+          .fn()
+          .mockResolvedValue(pending ? { id: 'pv1', channel } : null),
       },
       emailVerificationCode: {
         findFirst: jest.fn().mockResolvedValue({
@@ -175,6 +183,35 @@ describe('a pending mobile sign-up holds no session', () => {
       expect((err as ForbiddenException).getResponse()).toMatchObject({
         statusCode: 403,
         code: 'PHONE_NOT_CONFIRMED',
+      });
+    },
+  );
+
+  // AUTH-07: the code is the same (the contract names it), the sentence says
+  // where the code went.
+  it.each(routes)(
+    '%s: a pending sign-up whose code was mailed is refused with the same code and a sentence about the email',
+    async (_name, call) => {
+      const { auth } = build(true, user(), 'email');
+      const err = await call(auth).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as ForbiddenException).getResponse()).toEqual({
+        statusCode: 403,
+        code: 'PHONE_NOT_CONFIRMED',
+        message: 'Enter the code we emailed you to finish signing up.',
+      });
+    },
+  );
+
+  it.each(routes)(
+    '%s: a pending sign-up whose code was texted is refused with the sentence it always had',
+    async (_name, call) => {
+      const { auth } = build(true);
+      const err = await call(auth).catch((e: unknown) => e);
+      expect((err as ForbiddenException).getResponse()).toEqual({
+        statusCode: 403,
+        code: 'PHONE_NOT_CONFIRMED',
+        message: 'Confirm your phone number to finish signing up.',
       });
     },
   );

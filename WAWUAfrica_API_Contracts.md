@@ -69,6 +69,134 @@ Response 201:
 }
 ```
 
+### How a mobile sign-up is verified: `SIGNUP_VERIFY_CHANNEL` (AUTH-07)
+One setting decides what the code at A4 proves and how it travels (mobile repo
+DECISIONS.md R-39; owner, 6 Oct 2026: Fintava, and with it SMS, is being removed):
+
+| `SIGNUP_VERIFY_CHANNEL` | the 6-digit code is | it proves | routes that work |
+|---|---|---|---|
+| `phone` (default) | texted to the phone through the SmsProvider (Fintava) | the phone, exactly as AUTH-03 built it | `POST /auth/signup`, `/auth/phone/verify/start`, `/auth/phone/verify/confirm`, `/auth/signup/resume` |
+| `email` | **mailed** to the email typed at sign-up, through the same mailer as every other mail | the EMAIL (`email_verified`); the phone is stored, not proven (`phone_verified_at` stays empty) | `POST /auth/signup`, `/auth/signup/email-code/start`, `/auth/signup/email-code/confirm`, `/auth/signup/resume` |
+
+**Release steps, in this order.** The default is `phone` so that deploying this service
+changes nothing by itself.
+1. Deploy this service with the value unset or `phone`. Nothing changes for anyone.
+2. Release the app build with email codes to testers. An older build and a sign-up already
+   waiting on a text keep working while the value is `phone`. The new build asks
+   `GET /auth/signup/channel` and words A3's line by the answer, so A3 and A4 name the same
+   channel: text while the value is `phone`, email once it is `email`.
+3. Confirm Resend in production: `RESEND_API_KEY` is set on this service and the sending
+   domain is verified, shown by a real mail arriving in a real mailbox (for example
+   `POST /auth/forgot-password` with `method: email` for an account whose email is
+   confirmed: a web account, an account that finished a mailed sign-up, or a texted account
+   that finished the email step. For a texted account whose email was never confirmed it
+   answers 200 and sends nothing, which is not a test of Resend).
+4. Have a way to add and prove a phone later (BACKEND_GAPS G-222). A mailed sign-up whose
+   number another account has typed is made without a number, and the person must be able
+   to add and prove one.
+5. Set `SIGNUP_VERIFY_CHANNEL=email` and restart.
+6. From then an older app build, and any sign-up still waiting on a text, is refused (409
+   `SIGNUP_CHANNEL_DISABLED`; the person starts again at A3).
+Rolling back is setting `phone` and restarting.
+
+- Only a literal `email` (any case, trimmed) selects email. Anything else, nothing, a typo, or
+  `sms` (this value's earlier name), is `phone`: a typo never switches off the sign-up that
+  is live. The value is read at start; change it and restart to switch.
+- A route of the channel that is not active answers **409 `SIGNUP_CHANNEL_DISABLED`**
+  (`{ statusCode, code, message }`), before it checks anything or spends anything. No route
+  is removed, the SMS provider and the phone-code routes stay, so `phone` is the old
+  behaviour byte for byte (the `phone` answers carry no new field).
+- A sign-up started under one channel is answered `step: 'details'` by `resume` once the
+  other is active (its code went the other way): the person starts again at A3. Nothing is
+  lost: a new sign-up replaces the unproven one.
+- The limits are the phone code's, from the same config, counted on the email where the
+  phone code counted the number (below). The wrong-code rules and the 60 s resend gap are
+  the same. A mailed code lives 600 s (`SIGNUP_EMAIL_CODE_TTL_SECONDS`), because the mail
+  says "expires in 10 minutes".
+- A mailed sign-up that is confirmed is in the sign-up sequence (its `signup_progress` row
+  is made at confirm) and its `email` step is already done, so the next step is A11 or A12.
+- No code is ever logged by these routes. Mail is handed over strictly: no transport
+  (`RESEND_API_KEY` unset) answers 503 `EMAIL_NOT_CONFIGURED` and an error from Resend
+  answers 503 `EMAIL_SEND_FAILED` on the sign-up and on a resend alike, with no account
+  written for the first, and, for the others, the reserved mail given back, no wait held
+  against the person, and (on a resend) the code that was live left working.
+- **A number changes hands only when a newer sign-up proves it.** With `email`, a typed
+  number is not proven. An account that finished a mailed sign-up and whose
+  `phone_verified_at` is empty holds its typed number against every sign-up that does not
+  prove it: a mailed sign-up, an unconfirmed one, a refused one and one that expires never
+  take it or clear it. A mailed sign-up for such a number goes ahead **without the
+  number**: the account is made with no phone (its `phone` is `released:<id>`, which every
+  client reads as no phone) and the answer carries `phoneNotSaved: true` (also on `resume`),
+  so A4 says so in plain words; the person adds and proves a phone later (BACKEND_GAPS
+  G-222). A texted sign-up (`phone`) for that number is made the same way and texts its code
+  to the number typed; **the right code proves the number**, and only then does the older
+  account give it up (it keeps everything but the number, its `phone` becomes
+  `released:<id>`). A proven number, and the number of a long-standing (web or legacy)
+  account that is not in the sign-up sequence, are held as before (409). A code sent to a
+  number its account only typed does not reset that account's password or sign in to it
+  (`forgot-password` by text, `reset-password` by text, `otp/verify`).
+- A sign-up whose mail Resend refuses (503 `EMAIL_SEND_FAILED`) is removed: no pending row
+  is left holding a number or an email, and no other account changes.
+
+#### POST /auth/signup with `channel: email` (`SIGNUP_VERIFY_CHANNEL=email`)
+```json
+Response 201:
+{ "data": { "phone": "+2348031234412", "expiresIn": 600, "resendIn": 60,
+            "attempt": "Xk3...43 chars, unguessable, keep it",
+            "emailCodeRequired": false,
+            "channel": "email", "maskedEmail": "a•••@example.com" } }
+// With "phoneNotSaved": true as well when the number typed was not saved because another
+// account holds it (the account is made without a phone; A4 says so).
+
+Error 400 PHONE_INVALID / PHONE_NOT_SUPPORTED   as below (the number is still Nigerian only, R-36)
+Error 409                      as below
+Error 429 RATE_LIMITED / EMAIL_CODE_RESEND_TOO_SOON   with retryAfterSeconds
+Error 503 EMAIL_NOT_CONFIGURED / EMAIL_SEND_FAILED
+```
+An email held by a **phone-proven** mobile account that never proved it is still never
+taken from it, but there is no second code: the one mailed code is the proof, and the
+email moves to the new account when it is entered (`emailCodeRequired` stays false).
+
+#### POST /auth/signup/email-code/start (mail another code)
+For the holder of a sign-up's `attempt`. Any other call gets the same answer, mails nothing.
+```json
+Request:  { "phone": "+2348031234412", "attempt": "Xk3..." }
+Response 200: { "data": { "phone": "+2348031234412", "expiresIn": 600, "resendIn": 60, "channel": "email" } }
+Error 409 SIGNUP_CHANNEL_DISABLED
+Error 429 EMAIL_CODE_RESEND_TOO_SOON / RATE_LIMITED
+Error 503 EMAIL_NOT_CONFIGURED / EMAIL_SEND_FAILED   (a refused resend: the code that was live still works)
+```
+
+#### POST /auth/signup/email-code/confirm
+Gives a session only to the account that sign-up created.
+```json
+Request:  { "phone": "08031234412", "attempt": "Xk3...", "code": "481902" }
+Response 200: { "data": { "accessToken": "eyJ...", "refreshToken": "eyJ...", "user": {...} } }
+
+Error 400 EMAIL_CODE_INVALID   wrong code, expired, a wrong or replaced attempt, nothing
+                               pending for that number (the same answer for all of them)
+Error 409 EMAIL_ALREADY_CONFIRMED / SIGNUP_CHANNEL_DISABLED
+Error 429 EMAIL_CODE_LOCKED (4 wrong in a row, then 900 s) / RATE_LIMITED
+```
+After it the account has `email_verified = true`, `phone_verified_at = NULL`, and signs in
+by email, or by phone typed either way (the local-form lookup also finds an account in the
+sign-up sequence).
+
+#### POST /auth/signup/resume, with `channel: email`
+`{ step: 'phone', phone, expiresIn, resendIn, emailCodeRequired: false, accountType,
+channel: 'email', maskedEmail, phoneNotSaved? }` (the step is still named `phone`: it is the
+code step, whichever way the code travels).
+
+#### GET /auth/signup/channel (which way the code will travel)
+For A3, before anyone types anything. Needs no sign-in, reads no account, sends nothing.
+```json
+Response 200: { "data": { "channel": "phone" } }   // or "email": SIGNUP_VERIFY_CHANNEL as read
+```
+A3 words its line by it ("We'll text a code to your phone." or "We'll email you a code to
+confirm your address."), so A3 and A4 name the same channel.
+
+The text below describes `SIGNUP_VERIFY_CHANNEL=phone` (the default).
+
 ### POST /auth/signup (mobile sign-up, phone code)
 Creates the account and texts a 6-digit code to the phone. **Issues no session**:
 the session comes from `/auth/phone/verify/confirm`. The phone may be written

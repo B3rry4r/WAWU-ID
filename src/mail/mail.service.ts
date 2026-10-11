@@ -55,6 +55,18 @@ interface LayoutOptions {
   cta?: { label: string; url: string };
 }
 
+/**
+ * The mail was not handed to the transport: no transport is configured, or
+ * Resend refused or could not be reached. Thrown only to a caller that asked
+ * for `strict` delivery (a sign-up code, where "sent" must be true).
+ */
+export class MailSendError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MailSendError';
+  }
+}
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
@@ -77,8 +89,26 @@ export class MailService {
     this.resend = new Resend(apiKey);
   }
 
-  async send(to: string, subject: string, html: string): Promise<void> {
+  /** True when a real mail transport is configured (RESEND_API_KEY is set). */
+  isConfigured(): boolean {
+    return this.resend !== null;
+  }
+
+  /**
+   * Hand a mail to Resend. By default a failure is logged and swallowed (a
+   * notification that does not arrive must not break the request that caused
+   * it). With `strict`, a missing transport, an error answer from Resend or an
+   * unreachable Resend throws MailSendError, for a sign-up code that the
+   * person is waiting for.
+   */
+  async send(
+    to: string,
+    subject: string,
+    html: string,
+    strict = false,
+  ): Promise<void> {
     if (!this.resend) {
+      if (strict) throw new MailSendError('no mail transport is configured');
       // No real mail transport configured (local dev without a Resend key).
       // Log any 6-digit verification code so a developer can still complete
       // a real end-to-end flow locally -- this is NOT a bypass (there is no
@@ -92,10 +122,18 @@ export class MailService {
       return;
     }
     try {
-      await this.resend.emails.send({ from: this.from, to, subject, html });
+      const result = await this.resend.emails.send({
+        from: this.from,
+        to,
+        subject,
+        html,
+      });
+      // Resend answers an error as data, not as a throw.
+      if (result.error) throw new Error(result.error.message);
       this.logger.log(`Email sent: ${to}`);
     } catch (err) {
       this.logger.error(`Email failed to ${to}: ${String(err)}`);
+      if (strict) throw new MailSendError('the mail could not be sent');
     }
   }
 
@@ -477,6 +515,7 @@ export class MailService {
     email: string,
     code: string,
     purpose?: string,
+    strict = false,
   ): Promise<void> {
     const reason = purpose ?? 'complete your verification';
     const body = [
@@ -501,6 +540,7 @@ export class MailService {
         preheader: 'Your WAWUAfrica verification code (expires in 10 minutes).',
         bodyHtml: body,
       }),
+      strict,
     );
   }
 

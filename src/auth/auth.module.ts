@@ -8,11 +8,13 @@ import { OtpModule } from '../otp/otp.module';
 import { SmsModule } from '../sms/sms.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { EmailSignupService } from './email-signup.service';
 import { InternalController } from './internal.controller';
 import { PhoneSignupService } from './phone-signup.service';
 import { DbRateLimiter, RateLimiter } from './rate-limiter.service';
 import { SessionReader } from './session-reader';
 import { SessionSecurityService } from './session-security.service';
+import { SignupChannelService } from './signup-channel.service';
 import { SignupSequenceController } from './signup-sequence.controller';
 import { SignupSequenceService } from './signup-sequence.service';
 import { TokensService } from './tokens.service';
@@ -39,6 +41,8 @@ import { TokensService } from './tokens.service';
     AuthService,
     TokensService,
     PhoneSignupService,
+    EmailSignupService,
+    SignupChannelService,
     SignupSequenceService,
     SessionReader,
     SessionSecurityService,
