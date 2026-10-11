@@ -561,9 +561,13 @@ sign-up code was texted to) is still the account's `phone`, however the two are
 spelled (`0803...`, `234803...` and `+234803...` are one number). The `email`
 and `phone` claims are always present, proven or not (a web sign-up types
 both), so a resource server that must know a contact is the person's reads
-these two and never trusts a typed address. A released phone (`released:<id>`,
-`phone_verified_at` empty) is `phoneVerified: false` and its `phone` claim is an
-empty string.
+these two and never trusts a typed address. A phone that is a marker or empty
+proves nothing, whatever else the row holds: a released phone (`released:<id>`)
+or a deleted one (`deleted:<id>`, set when the Hub finalises an account
+deletion) is `phoneVerified: false` even if `phone_verified_at` is still set,
+and a released phone's `phone` claim is an empty string. Releasing a phone or
+anonymising an account also clears `phone_verified_for`, so the number an
+account proved does not outlive the account's hold on it (JOIN-03 round 3).
 
 A phone written afterwards by the internal phone-change routes (`PATCH
 /internal/users/:wawuId/phone`, or the request and confirm pair whose code goes
@@ -573,7 +577,8 @@ as before. From then the token says `phoneVerified: false` for that number
 until a sign-up code proves it. Accounts that changed their phone through those
 routes BEFORE `phone_verified_for` existed were backfilled with the number they
 hold (the routes left no trace), so only changes after the migration are
-caught. Both are additive claims and a snapshot, like `verification`: the token
+caught; the backfill copies a real phone only, never a marker or an empty
+string. Both are additive claims and a snapshot, like `verification`: the token
 lives 15 minutes.
 
 ### INTERNAL — PATCH /internal/users/:wawuId/trust-score

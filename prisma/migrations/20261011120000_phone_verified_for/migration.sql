@@ -14,11 +14,16 @@
 -- column, index, constraint or value is changed, and an older instance
 -- running against this schema never reads or writes it.
 --
--- Backfill: every account that has `phone_verified_at` gets its CURRENT phone
--- as the number it was proven for. A phone that was changed through the
--- internal routes BEFORE this migration cannot be told apart from one that
--- never changed (the routes left no trace), so those accounts keep vouching
--- for the number they hold today; every change after it is caught.
+-- Backfill: every account that has `phone_verified_at` AND holds a real phone
+-- gets its CURRENT phone as the number it was proven for. A phone that was
+-- changed through the internal routes BEFORE this migration cannot be told
+-- apart from one that never changed (the routes left no trace), so those
+-- accounts keep vouching for the number they hold today; every change after it
+-- is caught. A row whose phone is not a number is never copied: an account
+-- anonymised before this migration (`deleted:<id>`, `phone_verified_at` kept),
+-- a released one (`released:<id>`) or an empty string would otherwise read as
+-- having "proved" a marker. Round 3 (D5) changed this statement in place; the
+-- migration was not deployed anywhere.
 --
 -- Deploy order: this migration first, then the new code (`npm run start:prod`
 -- runs `prisma migrate deploy` before starting, so one deploy does both).
@@ -35,4 +40,7 @@ ALTER TABLE "wawu_users" ADD COLUMN "phone_verified_for" TEXT;
 -- Backfill
 UPDATE "wawu_users"
    SET "phone_verified_for" = "phone"
- WHERE "phone_verified_at" IS NOT NULL;
+ WHERE "phone_verified_at" IS NOT NULL
+   AND btrim("phone") <> ''
+   AND "phone" NOT LIKE 'deleted:%'
+   AND "phone" NOT LIKE 'released:%';

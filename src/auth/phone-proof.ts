@@ -1,4 +1,5 @@
 import { normalisePhone } from '../common/phone.util';
+import { isStoredPhone } from './released-phone';
 
 /**
  * Whether the account's CURRENT phone is a number it has proven (JOIN-03
@@ -8,9 +9,12 @@ import { normalisePhone } from '../common/phone.util';
  * (`phone_verified_for`) is still the number it holds.
  *
  * "The same number" is read the way sign-up reads it: `0803...`, `234803...`
- * and `+234803...` are one phone. Anything that does not read as a phone (a
- * `released:<id>` or `deleted:<id>` marker) is compared as written, so it
- * never matches a real number.
+ * and `+234803...` are one phone.
+ *
+ * A marker (`released:<id>`, `deleted:<id>`) or an empty phone is not a phone
+ * at all, so it proves nothing, whatever else the row holds (JOIN-03 round 3,
+ * D5): that is decided before any comparison, so two equal markers, or two
+ * empty strings, never count as "the same number".
  */
 export interface PhoneProofFields {
   phone: string;
@@ -26,6 +30,9 @@ export function phoneIsProven(user: PhoneProofFields): boolean {
     typeof user.phoneVerifiedFor !== 'string' ||
     typeof user.phone !== 'string'
   ) {
+    return false;
+  }
+  if (!isStoredPhone(user.phone) || !isStoredPhone(user.phoneVerifiedFor)) {
     return false;
   }
   if (user.phoneVerifiedFor === user.phone) return true;

@@ -31,7 +31,9 @@
 // changing nothing, if the number, in any spelling, is held by a row that
 // apply did not see holding it: apply records every row of each set it
 // touched, keeper, released and held, in g16_phone_members), then
-// drops both tables. Neither touches any other column (updated_at included), so
+// drops both tables. `apply` also clears a released row's `phone_verified_for`
+// (the number it proved goes with its phone) and `revert` puts it back from the
+// same table. Neither touches any other column (updated_at included), so
 // a revert leaves every row byte for byte as it was. `report` prints ids and
 // masked numbers only.
 import { createRequire } from 'node:module';
@@ -137,6 +139,12 @@ try {
         old_phone text NOT NULL,
         keeper_id uuid NOT NULL,
         released_at timestamptz NOT NULL DEFAULT now())`);
+    // JOIN-03 round 3 (D3): a released row's `phone_verified_for` (the number
+    // it proved) goes with its phone, so a marker row keeps no number. Revert
+    // puts it back from here.
+    await client.query(
+      'ALTER TABLE g16_phone_releases ADD COLUMN IF NOT EXISTS old_verified_for text',
+    );
     // Every row apply saw holding a number it touched (keeper, released,
     // held), so revert can tell them from a row that took the number later.
     await client.query(`
@@ -154,11 +162,12 @@ try {
       }
       for (const r of s.release) {
         await client.query(
-          'INSERT INTO g16_phone_releases (user_id, old_phone, keeper_id) VALUES ($1, $2, $3)',
+          `INSERT INTO g16_phone_releases (user_id, old_phone, old_verified_for, keeper_id)
+           SELECT id, $2::text, phone_verified_for, $3::uuid FROM wawu_users WHERE id = $1`,
           [r.id, r.phone, s.keeper.id],
         );
         await client.query(
-          "UPDATE wawu_users SET phone = 'released:' || id::text WHERE id = $1",
+          "UPDATE wawu_users SET phone = 'released:' || id::text, phone_verified_for = NULL WHERE id = $1",
           [r.id],
         );
         released += 1;
@@ -170,8 +179,13 @@ try {
     );
   } else {
     await client.query('BEGIN');
+    // A table made before JOIN-03 round 3 has no such column: its rows restore
+    // no proven number (the account then reads as unproven, never as proven).
+    await client.query(
+      'ALTER TABLE g16_phone_releases ADD COLUMN IF NOT EXISTS old_verified_for text',
+    );
     const { rows } = await client.query(
-      'SELECT user_id, old_phone, keeper_id FROM g16_phone_releases ORDER BY released_at',
+      'SELECT user_id, old_phone, old_verified_for, keeper_id FROM g16_phone_releases ORDER BY released_at',
     );
     // A clash is a row apply did not see holding the number in ANY spelling
     // (0803..., +234..., 234..., spaced), or any row on the exact old text
@@ -191,10 +205,10 @@ try {
       process.exitCode = 1;
     } else {
       for (const r of rows) {
-        await client.query('UPDATE wawu_users SET phone = $2 WHERE id = $1', [
-          r.user_id,
-          r.old_phone,
-        ]);
+        await client.query(
+          'UPDATE wawu_users SET phone = $2, phone_verified_for = $3 WHERE id = $1',
+          [r.user_id, r.old_phone, r.old_verified_for],
+        );
       }
       await client.query('DROP TABLE g16_phone_releases');
       await client.query('DROP TABLE g16_phone_members');

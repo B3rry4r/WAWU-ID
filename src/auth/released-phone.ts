@@ -10,6 +10,27 @@
  */
 export const RELEASED_PHONE_PREFIX = 'released:';
 
+/**
+ * What the phone column holds for an account the Hub finalised as deleted
+ * (`DELETE /internal/users/:id?mode=anonymize`). Like the released marker, it
+ * is not a phone number.
+ */
+export const DELETED_PHONE_PREFIX = 'deleted:';
+
+/**
+ * Whether the stored phone is a number, as opposed to a marker
+ * (`released:<id>`, `deleted:<id>`) or nothing. A marker is never a phone, so
+ * nothing about it can be a number an account proved.
+ */
+export function isStoredPhone(stored: string): boolean {
+  return (
+    typeof stored === 'string' &&
+    stored.trim() !== '' &&
+    !stored.startsWith(RELEASED_PHONE_PREFIX) &&
+    !stored.startsWith(DELETED_PHONE_PREFIX)
+  );
+}
+
 export function phoneForClients(stored: string): string {
   return typeof stored === 'string' && stored.startsWith(RELEASED_PHONE_PREFIX)
     ? ''

@@ -213,6 +213,15 @@ describe('a phone is held only once it is proven', () => {
       }
     });
 
+    it('clears the number the released account was recorded as proving, so a marker row keeps no number (JOIN-03 round 3, D3)', async () => {
+      const typed = row({ phoneVerifiedFor: PHONE });
+      const prisma = world(typed);
+      prisma.progress.push('a1');
+      await take(prisma);
+      expect(typed.phone).toBe('released:a1');
+      expect(typed.phoneVerifiedFor).toBeNull();
+    });
+
     it('removes an unconfirmed sign-up that holds the number', async () => {
       const pending = row({
         phoneVerification: { id: 'c1' } as never,

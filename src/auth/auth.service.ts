@@ -26,7 +26,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { phoneForClients } from './released-phone';
+import { DELETED_PHONE_PREFIX, phoneForClients } from './released-phone';
 import { holdsUnprovenPhone } from './unproven-phone';
 import { TokenPair, TokensService } from './tokens.service';
 
@@ -763,7 +763,10 @@ export class AuthService {
           where: { id: userId },
           data: {
             email: null,
-            phone: `deleted:${userId}`,
+            phone: `${DELETED_PHONE_PREFIX}${userId}`,
+            // The number the account proved is PII too (JOIN-03 round 3, D3):
+            // it goes with the phone.
+            phoneVerifiedFor: null,
             firstName: null,
             lastName: null,
             country: null,

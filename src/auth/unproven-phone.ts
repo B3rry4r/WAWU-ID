@@ -174,7 +174,9 @@ export async function takeProvenNumber(
   for (const id of release) {
     const done = await tx.wawuUser.updateMany({
       where: { id, phoneVerifiedAt: null, phone: { in: [...variants] } },
-      data: { phone: releasedPhoneFor(id) },
+      // The number it proved (if the row ever held one) goes with the phone:
+      // JOIN-03 round 3, D3.
+      data: { phone: releasedPhoneFor(id), phoneVerifiedFor: null },
     });
     if (done.count === 0) throw new ConflictException(SAME_ACCOUNT);
   }

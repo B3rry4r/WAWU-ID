@@ -1,4 +1,5 @@
 import type { WawuUser } from '@prisma/client';
+import { phoneIsProven } from './phone-proof';
 import { TokensService } from './tokens.service';
 
 /**
@@ -167,6 +168,52 @@ describe('the access token says which contact is proven (JOIN-03)', () => {
       expect(payload(user({ ...proven, phone: 'deleted:u1' }))).toMatchObject({
         phoneVerified: false,
       });
+    });
+
+    // JOIN-03 round 3, D5: a marker or an empty phone is decided before any
+    // comparison, so two equal markers (or two empty strings) never prove.
+    it('a marker or an empty phone proves nothing, even when the recorded value is the same text', () => {
+      const at = new Date();
+      for (const marker of ['deleted:u1', 'released:u1', '', '   ']) {
+        expect(
+          payload(
+            user({
+              phoneVerifiedAt: at,
+              phoneVerifiedFor: marker,
+              phone: marker,
+            }),
+          ),
+        ).toMatchObject({ phoneVerified: false });
+      }
+      // a marker beside a real recorded number, and a real phone beside a marker
+      expect(payload(user({ ...proven, phone: 'deleted:u1' }))).toMatchObject({
+        phoneVerified: false,
+      });
+      expect(
+        payload(
+          user({
+            phoneVerifiedAt: at,
+            phoneVerifiedFor: 'deleted:u1',
+            phone: '+2348031234567',
+          }),
+        ),
+      ).toMatchObject({ phoneVerified: false });
+    });
+
+    it('the unit under the token says the same (phoneIsProven)', () => {
+      const at = new Date();
+      const fields = (phone: string, phoneVerifiedFor: string | null) => ({
+        phone,
+        phoneVerifiedAt: at,
+        phoneVerifiedFor,
+      });
+      expect(phoneIsProven(fields('deleted:u1', 'deleted:u1'))).toBe(false);
+      expect(phoneIsProven(fields('released:u1', 'released:u1'))).toBe(false);
+      expect(phoneIsProven(fields('', ''))).toBe(false);
+      expect(phoneIsProven(fields('+2348031234567', '+2348031234567'))).toBe(
+        true,
+      );
+      expect(phoneIsProven(fields('08031234567', '+2348031234567'))).toBe(true);
     });
 
     it('a number that only looks like the proved one is a different number', () => {
