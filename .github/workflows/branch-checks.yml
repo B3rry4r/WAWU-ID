@@ -1,0 +1,82 @@
+name: Branch checks
+
+# OPS-CI (15 Oct 2026). The deploy's build job, on GitHub, for every task
+# branch. deploy.yml runs it only AFTER a merge to main, so a branch that would
+# stop the deploy was only found there. Agents run only what they touched and
+# read this result; a red run means the task is not done.
+#
+# The steps of `build` are a COPY of deploy.yml's `build` job (a workflow cannot
+# call another workflow's job). deploy.yml is untouched. The first job,
+# deploy-build-in-sync, fails when the copy and the original differ
+# (scripts/ci/check_deploy_in_sync.py lists exactly what it ignores), and
+# `build` waits for it.
+#
+# Each job's last log line is "RESULT <job>: <status>".
+
+on:
+  push:
+    branches: ['wmt/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per branch (per pull request for pull_request runs): a newer push
+  # cancels the older run.
+  group: branch-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-build-in-sync:
+    name: deploy-build-in-sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install --quiet pyyaml
+
+      - name: deploy.yml build job and this copy are the same steps
+        run: python3 scripts/ci/check_deploy_in_sync.py
+
+      - name: Result
+        id: result
+        if: always()
+        run: 'echo "RESULT deploy-build-in-sync: ${{ job.status }}"'
+
+  build:
+    name: build
+    needs: deploy-build-in-sync
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wawu_id_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/wawu_id_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx prisma migrate deploy
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+      - name: Result
+        id: result
+        if: always()
+        run: 'echo "RESULT build: ${{ job.status }}"'
