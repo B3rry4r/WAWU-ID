@@ -7,6 +7,7 @@ import {
 } from '../testing/fake-signup-prisma';
 import { MemoryRateLimiter } from '../testing/memory-rate-limiter';
 import { RecordingMail } from '../testing/recording-mail';
+import { MailSendError } from '../mail/mail.service';
 import { AuthService } from './auth.service';
 import { EmailSignupService } from './email-signup.service';
 
@@ -629,6 +630,102 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
       expect(limits.hasGuesses(BUDGET)).toBe(true);
       expect((await confirm(attempt, code)).accessToken).toBe('a');
       expect(limits.hasGuesses(BUDGET)).toBe(false);
+    });
+  });
+
+  // ── JOIN-03 round 6, N30: a resend in flight when the Hub anonymises ───────
+
+  describe("a resend that meets the Hub's anonymise answers as a resend after it and leaves no counter row (N30)", () => {
+    const ADDRESS = 'ada@example.test';
+
+    /**
+     * The Hub's anonymise commits after the resend has found the sign-up and
+     * before it has spent anything: it removes the code row, closes the account
+     * and clears the counters keyed on the address, then the resend's own
+     * reservations write them again.
+     */
+    function anonymiseBeforeTheResendSpends() {
+      const real = limits.hit.bind(limits) as MemoryRateLimiter['hit'];
+      let closed = false;
+      return jest
+        .spyOn(limits, 'hit')
+        .mockImplementation(async (scope, key, limit, windowSeconds) => {
+          if (!closed && scope === 'signup-mail-gap') {
+            closed = true;
+            Object.assign(prisma.users[0], {
+              status: 'banned',
+              deletedAt: new Date(),
+              phone: 'deleted:u1',
+              email: null,
+            });
+            prisma.users[0].phoneVerification = null;
+            await limits.forget('signup-mail-gap', ADDRESS);
+            await limits.forget('signup-mail-day', ADDRESS);
+          }
+          return real(scope, key, limit, windowSeconds);
+        });
+    }
+
+    it('answers what a resend made after the anonymise answers, and mails nothing', async () => {
+      const { attempt } = await begin();
+      later(61);
+      const spy = anonymiseBeforeTheResendSpends();
+      const inFlight = await service.start(PHONE, attempt, IP);
+      spy.mockRestore();
+      const after = await service.start(PHONE, attempt, IP);
+      await flush();
+      expect(inFlight).toEqual(after);
+      expect(inFlight).toEqual({
+        phone: PHONE,
+        expiresIn: 600,
+        resendIn: 60,
+        channel: 'email',
+      });
+      expect(mail.sent).toHaveLength(1);
+    });
+
+    it("leaves no counter row keyed on the closed account's address, and gives back the shared day's mail", async () => {
+      const { attempt } = await begin();
+      later(61);
+      const spy = anonymiseBeforeTheResendSpends();
+      await service.start(PHONE, attempt, IP);
+      spy.mockRestore();
+      expect(limits.hasCounter('signup-mail-gap', ADDRESS)).toBe(false);
+      expect(limits.hasCounter('signup-mail-day', ADDRESS)).toBe(false);
+      expect(
+        (await limits.isFull('signup-mail-global', 'all', 2, 86400)).allowed,
+      ).toBe(true);
+    });
+
+    it('the control: a resend that finds its sign-up still there mails the new code and counts it', async () => {
+      const { attempt } = await begin();
+      later(61);
+      await service.start(PHONE, attempt, IP);
+      await flush();
+      expect(mail.sent).toHaveLength(2);
+      expect(limits.hasCounter('signup-mail-gap', ADDRESS)).toBe(true);
+      expect(limits.hasCounter('signup-mail-day', ADDRESS)).toBe(true);
+    });
+
+    it('a resend whose mail is refused after the anonymise still answers 503, not a server error (the code it put back has no row to go to)', async () => {
+      const { attempt } = await begin();
+      later(61);
+      // the sign-up is there when the new code is stored, and gone when the refused mail asks for the old code back
+      mail.sendOtpCode = () => {
+        Object.assign(prisma.users[0], {
+          status: 'banned',
+          deletedAt: new Date(),
+          phone: 'deleted:u1',
+          email: null,
+        });
+        prisma.users[0].phoneVerification = null;
+        return Promise.reject(new MailSendError('refused'));
+      };
+      const body = await failure(service.start(PHONE, attempt, IP));
+      expect(body).toMatchObject({
+        statusCode: 503,
+        code: 'EMAIL_SEND_FAILED',
+      });
     });
   });
 

@@ -343,7 +343,7 @@ export class EmailSignupService {
       expiresAt: pending.expiresAt,
       lastSentAt: pending.lastSentAt,
     };
-    await this.prisma.phoneVerification.update({
+    const stored = await this.prisma.phoneVerification.updateMany({
       where: { id: pending.id },
       data: {
         codeHash,
@@ -351,6 +351,20 @@ export class EmailSignupService {
         lastSentAt: now,
       },
     });
+    if (stored.count === 0) {
+      // The sign-up went between the lookup above and now: the Hub anonymised
+      // the account, a newer sign-up replaced it, or its code was confirmed
+      // (JOIN-03 round 6, N30). A resend made after that gets the plain answer
+      // for a sign-up nobody holds, no mail and no counter, and so does this
+      // one: the three uses it reserved are given back, and the rows it wrote
+      // for the address go (the anonymise had already cleared them).
+      await this.limits.release('signup-mail-gap', email);
+      await this.limits.release('signup-mail-day', email);
+      await this.limits.release('signup-mail-global', 'all');
+      await this.limits.dropIfEmpty('signup-mail-gap', email);
+      await this.limits.dropIfEmpty('signup-mail-day', email);
+      return this.shape(phone);
+    }
     // Waited for, like the sign-up's mail: the person is never told a code was
     // sent that was not. Only someone holding a live secret reaches this line,
     // so how long it takes tells nobody anything they do not already know.
@@ -361,7 +375,7 @@ export class EmailSignupService {
       this.logger.error(`Sign-up code was not mailed: ${err.message}`);
       // Nothing was delivered: the code that was live stays live, the three
       // reserved mails are given back, and the person may ask again at once.
-      await this.prisma.phoneVerification.update({
+      await this.prisma.phoneVerification.updateMany({
         where: { id: pending.id },
         data: previous,
       });

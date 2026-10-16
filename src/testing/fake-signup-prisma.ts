@@ -202,6 +202,20 @@ export function fakePrisma() {
         Object.assign(row, data);
         return Promise.resolve(row);
       },
+      // A resend stores its new code by the row's id; a sign-up that went in
+      // the meantime (anonymised, replaced, confirmed) leaves nothing to update.
+      updateMany: ({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: Partial<CodeRow>;
+      }) => {
+        const row = codes().find((c) => c.id === where.id);
+        if (!row) return Promise.resolve({ count: 0 });
+        Object.assign(row, data);
+        return Promise.resolve({ count: 1 });
+      },
       // By the code row's id (a confirm taking its row) or by its account
       // (a path removing a pending sign-up deletes the code row first).
       deleteMany: ({ where }: { where: { id?: string; userId?: string } }) => {
