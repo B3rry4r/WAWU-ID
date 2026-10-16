@@ -267,11 +267,15 @@ describe('POST /internal/mail/send with attachments (WALLET-35)', () => {
     }).expect(400);
     await post(app, { ...MAIL, attachments: 'a.csv' }).expect(400);
     await post(app, { ...MAIL, attachments: [null] }).expect(400);
+    // Round 3: null is a bad body, refused before anything is sent. It used to
+    // mail the message and then answer 500 (and give the day's cap slot back).
+    const nul = await post(app, { ...MAIL, attachments: null }).expect(400);
+    expect(JSON.stringify(nul.body)).toContain('attachments');
     expect(seen).toHaveLength(0);
     await post(app, { ...MAIL, attachments: [file(1), file(2)] }).expect(200);
   });
 
-  it('no key, no big body: a caller without the key is held to 100 kb like every other route, and a small one is 401', async () => {
+  it('no key, no body read: a POST without the key is a 401 at any size, and other routes keep their 100 kb limit', async () => {
     const app = await makeApp();
     const server = app.getHttpServer() as Parameters<typeof request>[0];
     // Round 2: the 17 MB parser ran before the guard, so anyone could make the
@@ -290,9 +294,13 @@ describe('POST /internal/mail/send with attachments (WALLET-35)', () => {
       .set('X-Service-Key', '')
       .send(big);
     for (const res of [noKey, wrongKey, empty]) {
-      // Express's 413, which the app's filter answers as 500 on every route.
-      expect([413, 500]).toContain(res.status);
-      expect(res.status).not.toBe(200);
+      // Round 3: the guard's 401 in its usual shape, sent before the body is
+      // read (it was Express's 413, which the app's filter answered as 500).
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({
+        statusCode: 401,
+        message: 'Invalid service key',
+      });
     }
     // A body under 100 kb without the key is the guard's plain 401.
     const small = await request(server)

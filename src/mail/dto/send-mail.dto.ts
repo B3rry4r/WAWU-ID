@@ -10,6 +10,7 @@ import {
   Matches,
   MaxLength,
   MinLength,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import {
@@ -85,8 +86,13 @@ export class SendMailDto {
   })
   tag?: string;
 
-  /** Files that travel with the mail (a wallet statement's CSV). */
-  @IsOptional()
+  /**
+   * Files that travel with the mail (a wallet statement's CSV). Left out is
+   * fine; sent as null is a bad body (400, nothing mailed): a caller that
+   * means to attach a file and sends null has a bug, and a mail without its
+   * file is the wrong mail. (@IsOptional would have let null through.)
+   */
+  @ValidateIf((o: SendMailDto) => o.attachments !== undefined)
   @IsArray()
   @ArrayMaxSize(RELAY_ATTACHMENT_MAX_COUNT)
   @ValidateNested({ each: true })
