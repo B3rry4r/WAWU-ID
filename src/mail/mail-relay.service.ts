@@ -36,7 +36,7 @@ export class MailRelayService {
   async send(
     dto: SendMailDto,
     idempotencyKey?: string,
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; attachments?: number }> {
     const headers = this.allowedHeaders(dto.headers);
     this.checkAttachmentSize(dto);
     if (!this.reserve()) {
@@ -51,7 +51,7 @@ export class MailRelayService {
       );
     }
     try {
-      return await this.mail.sendRelayed({
+      const sent = await this.mail.sendRelayed({
         to: dto.to,
         subject: dto.subject,
         html: dto.html,
@@ -61,6 +61,13 @@ export class MailRelayService {
         attachments: dto.attachments,
         idempotencyKey: idempotencyKey?.slice(0, 256) || undefined,
       });
+      // A mail that carried a list of files says how many went to the sender,
+      // so a caller can tell this relay from one (before WALLET-35) that drops
+      // the files and answers { id } alone. A mail with no list answers { id }
+      // exactly as it always did.
+      return dto.attachments === undefined
+        ? { id: sent.id }
+        : { id: sent.id, attachments: dto.attachments.length };
     } catch (e) {
       this.release();
       if (!(e instanceof MailRelayError)) throw e;

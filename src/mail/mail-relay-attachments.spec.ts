@@ -134,7 +134,9 @@ describe('POST /internal/mail/send with attachments (WALLET-35)', () => {
         },
       ],
     }).expect(200);
-    expect(res.body).toEqual({ id: 'stand-in-1' });
+    // It says how many files it handed on, so the Hub can tell this relay from
+    // one that drops them (round 2).
+    expect(res.body).toEqual({ id: 'stand-in-1', attachments: 1 });
     const sent = seen[0].body.attachments!;
     expect(sent).toHaveLength(1);
     expect(sent[0].filename).toBe('statement-2026-09-01-to-2026-09-30.csv');
@@ -150,10 +152,33 @@ describe('POST /internal/mail/send with attachments (WALLET-35)', () => {
 
   it('a mail with no files is sent exactly as before, with no attachments key', async () => {
     const app = await makeApp();
-    await post(app, MAIL).expect(200);
-    await post(app, { ...MAIL, attachments: [] }).expect(200);
+    const plain = await post(app, MAIL).expect(200);
+    const empty = await post(app, { ...MAIL, attachments: [] }).expect(200);
     expect(seen).toHaveLength(2);
     for (const s of seen) expect('attachments' in s.body).toBe(false);
+    // Its answer is the one it always was: { id } and nothing else. A list
+    // that was sent, even an empty one, is answered with its count.
+    expect(plain.body).toEqual({ id: 'stand-in-1' });
+    expect(empty.body).toEqual({ id: 'stand-in-2', attachments: 0 });
+  });
+
+  it('answers how many files it handed to the sender: two files, two', async () => {
+    const app = await makeApp();
+    const file = (n: number) => ({
+      filename: `f${n}.csv`,
+      content: b64(10),
+      contentType: 'text/csv',
+    });
+    const one = await post(app, { ...MAIL, attachments: [file(1)] }).expect(
+      200,
+    );
+    const two = await post(app, {
+      ...MAIL,
+      attachments: [file(1), file(2)],
+    }).expect(200);
+    expect(one.body).toEqual({ id: 'stand-in-1', attachments: 1 });
+    expect(two.body).toEqual({ id: 'stand-in-2', attachments: 2 });
+    expect(seen[1].body.attachments).toHaveLength(2);
   });
 
   it('takes a body far over 100 kb on this route (a 3 MB file), and only on this route', async () => {
@@ -246,17 +271,45 @@ describe('POST /internal/mail/send with attachments (WALLET-35)', () => {
     await post(app, { ...MAIL, attachments: [file(1), file(2)] }).expect(200);
   });
 
-  it('the guard still comes first: no key, no body is read', async () => {
+  it('no key, no big body: a caller without the key is held to 100 kb like every other route, and a small one is 401', async () => {
     const app = await makeApp();
-    const res = await request(
-      app.getHttpServer() as Parameters<typeof request>[0],
-    )
+    const server = app.getHttpServer() as Parameters<typeof request>[0];
+    // Round 2: the 17 MB parser ran before the guard, so anyone could make the
+    // server read a 16 MB body. Now the key is checked first.
+    const big = {
+      ...MAIL,
+      attachments: [{ filename: 'a.csv', content: b64(2_000_000) }],
+    };
+    const noKey = await request(server).post('/internal/mail/send').send(big);
+    const wrongKey = await request(server)
+      .post('/internal/mail/send')
+      .set('X-Service-Key', `${SERVICE_KEY}-no`)
+      .send(big);
+    const empty = await request(server)
+      .post('/internal/mail/send')
+      .set('X-Service-Key', '')
+      .send(big);
+    for (const res of [noKey, wrongKey, empty]) {
+      // Express's 413, which the app's filter answers as 500 on every route.
+      expect([413, 500]).toContain(res.status);
+      expect(res.status).not.toBe(200);
+    }
+    // A body under 100 kb without the key is the guard's plain 401.
+    const small = await request(server)
       .post('/internal/mail/send')
       .send({
         ...MAIL,
-        attachments: [{ filename: 'a.csv', content: b64(2_000_000) }],
+        attachments: [{ filename: 'a.csv', content: b64(10) }],
       });
-    expect(res.status).toBe(401);
+    expect(small.status).toBe(401);
+    const smallWrong = await request(server)
+      .post('/internal/mail/send')
+      .set('X-Service-Key', 'wrong')
+      .send(MAIL);
+    expect(smallWrong.status).toBe(401);
     expect(seen).toHaveLength(0);
+    // With the key the same big body is taken.
+    await post(app, big).expect(200);
+    expect(seen).toHaveLength(1);
   });
 });
