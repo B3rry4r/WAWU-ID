@@ -76,6 +76,35 @@ export class MailSendError extends Error {
   }
 }
 
+/** Why the relay could not send (EMAIL-02), as POST /internal/mail/send maps it. */
+export type MailRelayFailure =
+  | 'not_configured'
+  | 'invalid_address'
+  | 'unavailable'
+  | 'refused';
+
+export class MailRelayError extends Error {
+  constructor(
+    readonly kind: MailRelayFailure,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MailRelayError';
+  }
+}
+
+export interface RelayedMail {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  headers?: Record<string, string>;
+  /** Kept on the provider's record of the mail (the campaign id). */
+  tag?: string;
+  /** Same key on a retry: the provider answers with the first result. */
+  idempotencyKey?: string;
+}
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
@@ -124,7 +153,9 @@ export class MailService {
       // fixed/guessable value here, only whatever code was actually just
       // generated for this specific request) and this branch can never run
       // in a real deployment, which always has RESEND_API_KEY set.
-      const code = html.match(/letter-spacing:10px;color:[^;"]+;">(\d{6})</)?.[1];
+      const code = html.match(
+        /letter-spacing:10px;color:[^;"]+;">(\d{6})</,
+      )?.[1];
       this.logger.warn(
         `[mail skipped] to=${to} subject="${subject}"${code ? ` code=${code}` : ''}`,
       );
@@ -144,6 +175,77 @@ export class MailService {
       this.logger.error(`Email failed to ${to}: ${String(err)}`);
       if (strict) throw new MailSendError('the mail could not be sent');
     }
+  }
+
+  /**
+   * Send one finished mail the Hub built (EMAIL-02): its admin
+   * email campaigns. The From is always this service's MAIL_FROM. Unlike
+   * send(), it never swallows a failure: the caller is told which kind, so it
+   * can retry a busy provider and give up on a bad address.
+   */
+  async sendRelayed(mail: RelayedMail): Promise<{ id: string }> {
+    if (!this.resend) {
+      throw new MailRelayError(
+        'not_configured',
+        'WAWU ID has no email key set (RESEND_API_KEY), so no email can be sent.',
+      );
+    }
+    let result: Awaited<ReturnType<Resend['emails']['send']>>;
+    try {
+      result = await this.resend.emails.send(
+        {
+          from: this.from,
+          to: mail.to,
+          subject: mail.subject,
+          html: mail.html,
+          text: mail.text,
+          ...(mail.headers && Object.keys(mail.headers).length > 0
+            ? { headers: mail.headers }
+            : {}),
+          ...(mail.tag
+            ? { tags: [{ name: 'campaign', value: mail.tag }] }
+            : {}),
+        },
+        mail.idempotencyKey
+          ? { idempotencyKey: mail.idempotencyKey }
+          : undefined,
+      );
+    } catch {
+      throw new MailRelayError(
+        'unavailable',
+        'The email provider could not be reached. Try again.',
+      );
+    }
+    if (result.error) {
+      const { statusCode, name } = result.error;
+      const detail = result.error.message.slice(0, 200);
+      if (statusCode === null || statusCode === 429 || statusCode >= 500) {
+        throw new MailRelayError(
+          'unavailable',
+          'The email provider is busy or unavailable. Try again.',
+        );
+      }
+      if (
+        (statusCode === 400 || statusCode === 422) &&
+        name !== 'invalid_from_address'
+      ) {
+        throw new MailRelayError('invalid_address', detail);
+      }
+      this.logger.error(
+        `Relayed mail refused by Resend: ${name} ${statusCode}`,
+      );
+      throw new MailRelayError(
+        'refused',
+        'The email provider refused the message.',
+      );
+    }
+    if (!result.data?.id) {
+      throw new MailRelayError(
+        'unavailable',
+        'The email provider gave no answer. Try again.',
+      );
+    }
+    return { id: result.data.id };
   }
 
   // ── shared WAWUAfrica layout ────────────────────────────────────────────────

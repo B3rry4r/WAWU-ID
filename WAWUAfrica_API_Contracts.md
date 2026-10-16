@@ -521,6 +521,43 @@ Response 200:
 }
 ```
 
+### INTERNAL — POST /internal/mail/send
+Header: `X-Service-Key: <secret>` (checked before the body is read)
+Optional header: `Idempotency-Key: <string, up to 256>`. The same key answers with the first mail, never a second one.
+
+Sends one finished mail through this service's own Resend mailer, so a sibling
+service (the Hub's admin email campaigns, EMAIL-02) needs no email key of its own.
+The From line is always this service's `MAIL_FROM`; there is no way to set it
+from the call.
+```json
+Request:
+{
+  "to": "person@example.com",          // one address
+  "subject": "string",                 // one line, up to 300
+  "html": "string",                    // up to 80000
+  "text": "string",                    // up to 40000
+  "headers": {                         // optional; ONLY these two, any letter case
+    "List-Unsubscribe": "<https://...>",
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
+  },
+  "tag": "campaign id"                 // optional; letters, numbers, _ and - (up to 256)
+}
+
+Response 200:
+{ "id": "provider mail id" }
+
+Response 400: a bad address or body, or a header outside the allowlist
+Response 401: no service key, or a wrong one (always, while INTERNAL_SERVICE_KEY is unset)
+Response 429: the daily cap is reached (code MAIL_DAILY_CAP); do not retry today
+Response 502: the provider refused the mail (not a busy provider); do not retry
+Response 503: nothing was sent and a retry may work: the provider answered 429 or 5xx,
+              could not be reached, or this service has no RESEND_API_KEY set
+```
+The daily cap is `MAIL_RELAY_DAILY_CAP` (default 5000, PROVISIONAL: it is a guess
+until the owner sets it against the Resend plan). It counts mails sent in one
+UTC day for every caller together, in this server's memory, so a restart starts
+the day again from zero. A mail that failed gives its place back.
+
 ### INTERNAL — PATCH /internal/users/:wawuId/verification
 Header: `X-Service-Key: <secret>`
 
