@@ -15,8 +15,8 @@ import { serviceKeyMatches } from './service-key.guard';
  * without it is held to the 100 kb everyone else gets and never makes the
  * server buffer 17 MB (round 2: eight unauthenticated 16 MiB bodies at once
  * took the process from 209 MB to 474 MB before the guard could say 401). A
- * POST without the key is answered 401 right here and its body is never read
- * (round 3: before, a body over 100 kb without the key answered 500). The
+ * POST without the key is answered 401 right here, with no body read (round
+ * 3: before, a body over 100 kb without the key answered 500). The
  * guard still refuses a wrong key on any other path into the controller.
  *
  * The relay's parser comes first: a body already read is not read again, so
