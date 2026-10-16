@@ -1,6 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
+import {
+  labelOf,
+  type MoneyCheckReportMail,
+  nairaOf,
+  noticeSentence,
+  STATE_LABELS,
+  subjectOf,
+  VERDICT_SENTENCE,
+} from './money-check-report';
 
 /**
  * The email header banner.
@@ -428,6 +437,114 @@ export class MailService {
         bodyHtml: body,
         cta: { label: 'Pick a plan', url: planUrl },
       }),
+    );
+  }
+
+  /**
+   * The nightly money check's report (task MONEY-16, G-690), to the one
+   * person the Hub named. The Hub gives the facts and this service writes the
+   * mail, so nothing in it is the Hub's own HTML: every value arrives already
+   * checked by `parseMoneyCheckReport` and is escaped again here. Counts,
+   * references and amounts only. Strict: a mail that could not be handed to
+   * the transport throws, so the Hub keeps the report and sends it again.
+   */
+  async sendMoneyCheckReport(
+    email: string,
+    firstName: string | null | undefined,
+    report: MoneyCheckReportMail,
+  ): Promise<void> {
+    const e = (v: string): string => this.escape(v);
+    const strong = (v: string): string =>
+      `<strong style="color:${MAIL_COLORS.textPrimary};">${e(v)}</strong>`;
+    const muted = (v: string): string =>
+      `<span style="color:${MAIL_COLORS.textMuted};">${e(v)}</span>`;
+    const heading = (v: string): string =>
+      `<p style="margin:24px 0 8px;font-size:16px;font-weight:600;color:${MAIL_COLORS.textPrimary};">${e(v)}</p>`;
+    const line = (html: string): string =>
+      `<p style="margin:0 0 10px;font-size:15px;line-height:1.55;color:${MAIL_COLORS.textSecondary};">${html}</p>`;
+
+    const parts: string[] = [
+      this.p(
+        `${strong(`Night of ${report.night}`)} on ${e(labelOf(report.provider))}. ${e(VERDICT_SENTENCE[report.verdict])}`,
+      ),
+      line(
+        `${strong(`${report.walletsChecked} of ${report.walletsTotal}`)} wallets were checked. ` +
+          `${strong(String(report.mismatchCount))} ${report.mismatchCount === 1 ? 'difference' : 'differences'} between our ledger and the provider, ` +
+          `${strong(String(report.lookCount))} ${report.lookCount === 1 ? 'thing' : 'things'} for a person to look at.`,
+      ),
+    ];
+
+    parts.push(heading('What was checked'));
+    // A night that did not finish gives every check the same note: say it once.
+    const first = report.checks[0]?.note ?? null;
+    const same =
+      first !== null &&
+      report.checks.length > 1 &&
+      report.checks.every((c) => c.note === first);
+    if (same) parts.push(line(muted(first)));
+    for (const c of report.checks) {
+      parts.push(
+        line(
+          `${strong(labelOf(c.id))}: ${e(STATE_LABELS[c.state])}. ${c.checked} compared, ${c.found} found.` +
+            (c.note && !same ? ` ${muted(c.note)}` : ''),
+        ),
+      );
+    }
+
+    parts.push(heading('Held money'));
+    parts.push(
+      line(
+        `${report.held.openCount} open ${report.held.openCount === 1 ? 'hold' : 'holds'} worth ${e(nairaOf(report.held.openKobo))}. ` +
+          `WAWU's account needs at least ${e(nairaOf(report.held.requiredKobo))}` +
+          (report.held.merchantAvailableKobo === null
+            ? ' and could not be read.'
+            : ` and has ${e(nairaOf(report.held.merchantAvailableKobo))}.`),
+      ),
+    );
+
+    const notices = Object.entries(report.notices);
+    if (notices.length > 0) {
+      parts.push(heading('Worth knowing'));
+      for (const [key, n] of notices) {
+        parts.push(line(e(noticeSentence(key, n))));
+      }
+    }
+
+    if (report.items.length > 0) {
+      parts.push(heading('What differs or needs a look'));
+      for (const it of report.items) {
+        const amounts =
+          it.amountKobo === undefined
+            ? ''
+            : ` ${e(nairaOf(it.amountKobo))}` +
+              (it.otherKobo === undefined
+                ? ''
+                : ` against ${e(nairaOf(it.otherKobo))}`);
+        parts.push(
+          line(
+            `${strong(it.severity === 'mismatch' ? 'Difference' : 'Look')} ${muted(labelOf(it.check))}. ${e(it.detail)}${amounts} ` +
+              `${muted(`Reference ${it.ref}`)}`,
+          ),
+        );
+      }
+      if (report.itemsOmitted > 0) {
+        parts.push(
+          line(
+            `${e(String(report.itemsOmitted))} more ${report.itemsOmitted === 1 ? 'is' : 'are'} in the stored report on the Hub.`,
+          ),
+        );
+      }
+    }
+
+    await this.send(
+      email,
+      subjectOf(report),
+      this.layout({
+        preheader: `${VERDICT_SENTENCE[report.verdict]} ${report.walletsChecked} of ${report.walletsTotal} wallets checked.`,
+        firstName,
+        bodyHtml: parts.join(''),
+      }),
+      true,
     );
   }
 
