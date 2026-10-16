@@ -325,6 +325,31 @@ export class InternalController {
     return { data: await this.auth.sendUnpaidDeletionWarning(userId, dto.hoursLeft, dto.planUrl) };
   }
 
+  /**
+   * POST /internal/users/:userId/money-check-report
+   * Body: the nightly money check's report (counts, references and amounts;
+   * see src/mail/money-check-report.ts for every field).
+   *
+   * Mails the report to that account's own verified email address, once per
+   * call. Not a mail relay: the Hub names the user and the facts, this
+   * service owns the address, the subject and the wording, and a body that
+   * carries anything else (a field, a link, a name, a number a person could
+   * be known by) is refused with a 400. Answers 200 `{ data: { emailed:
+   * true } }` only after the mail was handed to the mailer; 404 when there is
+   * no such account, 409 when it has no verified address, 503 when the mailer
+   * could not take it, so the Hub keeps the report and tries again.
+   */
+  @Post('users/:userId/money-check-report')
+  @HttpCode(HttpStatus.OK)
+  async moneyCheckReport(
+    @Headers('x-service-key') serviceKey: string,
+    @Param('userId') userId: string,
+    @Body() body: unknown,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.sendMoneyCheckReport(userId, body) };
+  }
+
   private assertServiceKey(provided?: string): void {
     const expected = this.config.get<string>('INTERNAL_SERVICE_KEY') ?? '';
     if (!expected || !this.safeEqual(provided ?? '', expected)) {

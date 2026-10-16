@@ -648,6 +648,48 @@ Request: { "tier": "certified_professional" }
 Response 200: { "data": { "id": "uuid", "verificationTier": "certified_professional", ... } }
 ```
 
+### INTERNAL — POST /internal/users/:wawuId/money-check-report
+Header: `X-Service-Key: <secret>`
+
+The Hub's nightly money check (task MONEY-16, BACKEND_GAPS G-690) has this
+service mail its report to the account it names. Same split as the Ditto invite
+and the unpaid warning: the Hub names the person and gives the facts; WAWU ID
+owns the address (the account's own VERIFIED email, nothing else), the subject
+and the wording. It is not a mail relay, so a body that carries anything but
+counts, references and amounts is refused with a 400: a field this route does
+not name (at any depth), a value outside a closed list (`verdict`, a check
+`state`, a `severity`), a sentence with a character outside letters, digits,
+spaces and `. , : ; ' " ( ) _ -` (no link, address or em-dash fits), a reference
+that is only 10 or 11 digits (the length of a phone, account, BVN or ID number),
+an amount that is not signed digits (kobo), more than 100 `items`.
+
+```json
+Request: {
+  "night": "2026-10-12", "provider": "fintava",
+  "verdict": "clean | needs_a_look | differences | incomplete | not_checked",
+  "ranAt": "2026-10-12T01:41:09.512Z",
+  "walletsTotal": 9, "walletsChecked": 8, "mismatchCount": 2, "lookCount": 1,
+  "checks": [{ "id": "movements", "state": "ok | differences | needs_a_look | incomplete | not_checked",
+               "checked": 40, "found": 1, "note": "string|null" }],
+  "held": { "openCount": 3, "openKobo": "25000000", "requiredKobo": "25000000", "merchantAvailableKobo": "24999999|null" },
+  "items": [{ "check": "movements", "severity": "mismatch | look", "kind": "provider_only",
+              "ref": "uuid or our reference", "detail": "A plain sentence.",
+              "amountKobo": "400000", "otherKobo": "399000" }],
+  "itemsOmitted": 0,
+  "notices": { "wallets_opened_during_run": { "count": 1, "amountKobo": "optional" } }
+}
+Response 200: { "data": { "emailed": true } }   // only after the mail was handed to the mailer
+Response 400: a body this route will not take (a plain sentence naming the field)
+Response 401: missing or wrong X-Service-Key
+Response 404: no such account
+Response 409: the account has no verified email address (or none at all: an anonymised account)
+Response 503: the mailer could not take it; the Hub keeps the report and sends it again
+```
+Unlike the two mails above, "nothing was sent" is never a 200: the Hub keeps a
+report until WAWU ID has taken it, and the one alert that says money is not where
+it should be must not be lost to a quiet success. The route is not in
+`contract/openapi.json` (the Hub is its only caller, not the app).
+
 ---
 
 ## 2. FEED & POSTS
