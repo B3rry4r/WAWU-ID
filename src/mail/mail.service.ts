@@ -94,6 +94,12 @@ export interface RelayedMail {
   tag?: string;
   /** Same key on a retry: the provider answers with the first result. */
   idempotencyKey?: string;
+  /** Files that travel with the mail; `content` is base64. */
+  attachments?: Array<{
+    filename: string;
+    content: string;
+    contentType?: string;
+  }>;
 }
 
 @Injectable()
@@ -195,6 +201,15 @@ export class MailService {
             : {}),
           ...(mail.tag
             ? { tags: [{ name: 'campaign', value: mail.tag }] }
+            : {}),
+          ...(mail.attachments && mail.attachments.length > 0
+            ? {
+                attachments: mail.attachments.map((a) => ({
+                  filename: a.filename,
+                  content: Buffer.from(a.content, 'base64'),
+                  ...(a.contentType ? { contentType: a.contentType } : {}),
+                })),
+              }
             : {}),
         },
         mail.idempotencyKey

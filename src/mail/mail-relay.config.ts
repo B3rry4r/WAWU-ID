@@ -26,3 +26,30 @@ export function mailRelayDailyCap(config: ConfigService): number {
   const raw = Number(config.get<string>('MAIL_RELAY_DAILY_CAP'));
   return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_MAIL_RELAY_DAILY_CAP;
 }
+
+/**
+ * The files a relayed mail may carry (WALLET-35: the Hub mails a wallet
+ * statement as a CSV). At most this many, with these names of type, and no
+ * more than RELAY_ATTACHMENT_MAX_BYTES between them once decoded.
+ */
+export const RELAY_ATTACHMENT_MAX_COUNT = 2;
+export const RELAY_ATTACHMENT_TYPES = [
+  'text/csv; charset=utf-8',
+  'text/csv',
+  'application/pdf',
+] as const;
+
+/**
+ * The most bytes of attachments in one mail, decoded. The Hub's largest
+ * statement (50,000 movements) is about 9 MB; Resend takes 40 MB a message.
+ * Held below both so one request cannot fill this server's memory.
+ */
+// PROVISIONAL(MAIL-RELAY-ATTACHMENT-MAX, owner=owner, why=no document names a size for a mailed file; 12 MiB covers the Hub's largest statement with room and sits well under Resend's 40 MB message limit)
+export const RELAY_ATTACHMENT_MAX_BYTES = 12 * 1024 * 1024;
+
+/**
+ * The JSON body limit of POST /internal/mail/send only: the attachments in
+ * base64 (4 bytes for every 3) plus the mail's own text. Every other route
+ * keeps Express's 100 kb.
+ */
+export const MAIL_RELAY_BODY_LIMIT = '17mb';

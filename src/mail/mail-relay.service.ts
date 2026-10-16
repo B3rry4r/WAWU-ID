@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { SendMailDto } from './dto/send-mail.dto';
 import {
+  RELAY_ATTACHMENT_MAX_BYTES,
   RELAY_HEADER_ALLOWLIST,
   RELAY_HEADER_MAX_LENGTH,
   mailRelayDailyCap,
@@ -37,6 +38,7 @@ export class MailRelayService {
     idempotencyKey?: string,
   ): Promise<{ id: string }> {
     const headers = this.allowedHeaders(dto.headers);
+    this.checkAttachmentSize(dto);
     if (!this.reserve()) {
       throw new HttpException(
         {
@@ -56,6 +58,7 @@ export class MailRelayService {
         text: dto.text,
         headers,
         tag: dto.tag,
+        attachments: dto.attachments,
         idempotencyKey: idempotencyKey?.slice(0, 256) || undefined,
       });
     } catch (e) {
@@ -98,6 +101,24 @@ export class MailRelayService {
       out[canonical] = value;
     }
     return out;
+  }
+
+  /** The files of one mail, decoded, may not add up to more than the cap. */
+  private checkAttachmentSize(dto: SendMailDto): void {
+    let bytes = 0;
+    for (const a of dto.attachments ?? []) {
+      const padding = a.content.endsWith('==')
+        ? 2
+        : a.content.endsWith('=')
+          ? 1
+          : 0;
+      bytes += Math.floor((a.content.length * 3) / 4) - padding;
+    }
+    if (bytes > RELAY_ATTACHMENT_MAX_BYTES) {
+      throw new BadRequestException(
+        'The attachments are too large to send in one mail.',
+      );
+    }
   }
 
   /** Take one place in today's count, or say the day is full. */
