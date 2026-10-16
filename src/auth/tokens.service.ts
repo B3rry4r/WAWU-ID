@@ -147,10 +147,27 @@ export class TokensService {
     }
   }
 
-  /** Issue a fresh access+refresh pair and persist the refresh-token hash. */
-  async issueTokens(
+  /**
+   * Issue a fresh access+refresh pair and persist the refresh-token hash.
+   * Housekeeping rides on it: the account's expired records are swept first,
+   * best effort (see deleteExpiredRefreshTokens).
+   */
+  async issueTokens(user: WawuUser): Promise<TokenPair> {
+    return this.mintTokenPair(user, this.prisma, true);
+  }
+
+  /**
+   * The body of issueTokens. `db` is the connection that stores the new
+   * record; a refresh passes its transaction. The sweep runs on the pool, and
+   * only when `sweep` is set: a caller inside a transaction never sets it,
+   * because a failed statement aborts a Postgres transaction and a sweep that
+   * failed in there would fail the insert after it (FIX-13). That caller
+   * sweeps once the transaction has committed.
+   */
+  private async mintTokenPair(
     user: WawuUser,
-    db: Prisma.TransactionClient | PrismaService = this.prisma,
+    db: Prisma.TransactionClient | PrismaService,
+    sweep: boolean,
   ): Promise<TokenPair> {
     // A mobile sign-up whose phone code was never entered holds no session,
     // whichever route asks for one (sign-in, email confirmation, the phone
@@ -188,7 +205,7 @@ export class TokensService {
     );
 
     const decoded = this.jwt.decode(refreshToken) as { exp: number };
-    await this.deleteExpiredRefreshTokens(user.id, db);
+    if (sweep) await this.deleteExpiredRefreshTokens(user.id);
     await db.refreshToken.create({
       data: {
         userId: user.id,
@@ -273,14 +290,14 @@ export class TokensService {
    * EXPIRED_SWEEP_BATCH of them. Nothing else removes an expired row (a token
    * nobody presents again leaves one behind), and the old scan paid argon2 for
    * each. Runs on every issue and every sign-out, so the rows of an account
-   * that is in use never pile up. Best effort: it never fails the sign-in or
-   * sign-out it rides on, and inside a transaction a failure here fails the
-   * statement after it anyway.
+   * that is in use never pile up. Best effort: an error is logged and
+   * swallowed, so it never fails the sign-in, refresh or sign-out it rides on.
+   * That holds only OUTSIDE a transaction (a failed statement aborts a
+   * Postgres transaction, and the next statement in it fails too), so it
+   * always runs on the pool, never on a transaction client.
    */
-  private async deleteExpiredRefreshTokens(
-    userId: string,
-    db: Prisma.TransactionClient | PrismaService,
-  ): Promise<void> {
+  private async deleteExpiredRefreshTokens(userId: string): Promise<void> {
+    const db = this.prisma;
     try {
       const now = Date.now();
       const stale = await db.refreshToken.findMany({
@@ -366,7 +383,7 @@ export class TokensService {
 
     // Expired rows go first: an expired token presented here is cleaned up by
     // the sweep (the lookup below ignores expired old-style rows).
-    await this.deleteExpiredRefreshTokens(userId, this.prisma);
+    await this.deleteExpiredRefreshTokens(userId);
 
     const record = await this.findRefreshRecord(
       userId,
@@ -442,11 +459,16 @@ export class TokensService {
         await tx.refreshToken.deleteMany({ where: { userId } });
         return 'refused' as const;
       }
-      return this.issueTokens(user, tx);
+      // No sweep in here (FIX-13): see mintTokenPair.
+      return this.mintTokenPair(user, tx, false);
     });
     if (typeof outcome === 'string') {
       throw new UnauthorizedException('Invalid refresh token');
     }
+    // The rotation has committed. Housekeeping runs now, outside the account's
+    // lock and the transaction, and a failure of it is logged, never raised: a
+    // person who presented a good token is signed in.
+    await this.deleteExpiredRefreshTokens(userId);
     return outcome;
   }
 }
