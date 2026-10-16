@@ -20,14 +20,31 @@ export class ServiceKeyGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
-    const header = req.headers['x-service-key'];
-    const provided = typeof header === 'string' ? header : '';
-    const expected = this.config.get<string>('INTERNAL_SERVICE_KEY') ?? '';
-    const a = Buffer.from(provided);
-    const b = Buffer.from(expected);
-    if (!expected || a.length !== b.length || !timingSafeEqual(a, b)) {
+    if (
+      !serviceKeyMatches(
+        req.headers['x-service-key'],
+        this.config.get<string>('INTERNAL_SERVICE_KEY'),
+      )
+    ) {
       throw new UnauthorizedException('Invalid service key');
     }
     return true;
   }
+}
+
+/**
+ * True when the X-Service-Key header is the configured key. A missing or
+ * repeated header, and an unset key, never match. One rule for the guard and
+ * for the body parser that must know the caller before it reads a big body
+ * (mail-relay-body.ts).
+ */
+export function serviceKeyMatches(
+  header: unknown,
+  expectedKey: string | undefined,
+): boolean {
+  const provided = typeof header === 'string' ? header : '';
+  const expected = expectedKey ?? '';
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  return Boolean(expected) && a.length === b.length && timingSafeEqual(a, b);
 }

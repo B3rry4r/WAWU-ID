@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { SendMailDto } from './dto/send-mail.dto';
 import {
+  RELAY_ATTACHMENT_MAX_BYTES,
   RELAY_HEADER_ALLOWLIST,
   RELAY_HEADER_MAX_LENGTH,
   mailRelayDailyCap,
@@ -35,8 +36,9 @@ export class MailRelayService {
   async send(
     dto: SendMailDto,
     idempotencyKey?: string,
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; attachments?: number }> {
     const headers = this.allowedHeaders(dto.headers);
+    this.checkAttachmentSize(dto);
     if (!this.reserve()) {
       throw new HttpException(
         {
@@ -49,15 +51,23 @@ export class MailRelayService {
       );
     }
     try {
-      return await this.mail.sendRelayed({
+      const sent = await this.mail.sendRelayed({
         to: dto.to,
         subject: dto.subject,
         html: dto.html,
         text: dto.text,
         headers,
         tag: dto.tag,
+        attachments: dto.attachments,
         idempotencyKey: idempotencyKey?.slice(0, 256) || undefined,
       });
+      // A mail that carried a list of files says how many went to the sender,
+      // so a caller can tell this relay from one (before WALLET-35) that drops
+      // the files and answers { id } alone. A mail with no list answers { id }
+      // exactly as it always did.
+      return dto.attachments === undefined
+        ? { id: sent.id }
+        : { id: sent.id, attachments: dto.attachments.length };
     } catch (e) {
       this.release();
       if (!(e instanceof MailRelayError)) throw e;
@@ -98,6 +108,24 @@ export class MailRelayService {
       out[canonical] = value;
     }
     return out;
+  }
+
+  /** The files of one mail, decoded, may not add up to more than the cap. */
+  private checkAttachmentSize(dto: SendMailDto): void {
+    let bytes = 0;
+    for (const a of dto.attachments ?? []) {
+      const padding = a.content.endsWith('==')
+        ? 2
+        : a.content.endsWith('=')
+          ? 1
+          : 0;
+      bytes += Math.floor((a.content.length * 3) / 4) - padding;
+    }
+    if (bytes > RELAY_ATTACHMENT_MAX_BYTES) {
+      throw new BadRequestException(
+        'The attachments are too large to send in one mail.',
+      );
+    }
   }
 
   /** Take one place in today's count, or say the day is full. */

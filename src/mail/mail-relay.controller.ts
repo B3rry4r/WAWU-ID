@@ -22,10 +22,13 @@ export class MailRelayController {
 
   /**
    * POST /internal/mail/send
-   * Body: { to, subject, html, text, headers?, tag? }
+   * Body: { to, subject, html, text, headers?, tag?, attachments? }
    * Optional header: Idempotency-Key (the same key answers with the first mail).
    *
-   * 200 { id } sent | 400 bad body or address | 401 no key | 429 daily cap |
+   * 200 { id } sent, or { id, attachments } when the body had an attachments
+   * list, `attachments` being how many files were handed to the sender (the
+   * caller compares it with what it sent) | 400 bad body or address | 401 no
+   * key | 429 daily cap |
    * 502 the provider refused | 503 try again (busy, unreachable, or no email
    * key set on this service).
    */
@@ -34,7 +37,7 @@ export class MailRelayController {
   send(
     @Body() dto: SendMailDto,
     @Headers('idempotency-key') idempotencyKey?: string,
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; attachments?: number }> {
     return this.relay.send(dto, idempotencyKey);
   }
 }

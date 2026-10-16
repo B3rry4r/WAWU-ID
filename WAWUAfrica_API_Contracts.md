@@ -540,7 +540,14 @@ Request:
     "List-Unsubscribe": "<https://...>",
     "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
   },
-  "tag": "campaign id"                 // optional; letters, numbers, _ and - (up to 256)
+  "tag": "campaign id",                // optional; letters, numbers, _ and - (up to 256)
+  "attachments": [                     // optional (WALLET-35); at most 2
+    {
+      "filename": "statement-2026-09-01-to-2026-09-30.csv", // a plain name: letters, numbers, . _ - (no path, no space), up to 128
+      "content": "base64",             // the file's bytes
+      "contentType": "text/csv; charset=utf-8"  // optional; text/csv, text/csv; charset=utf-8 or application/pdf
+    }
+  ]
 }
 
 Response 200:
@@ -553,6 +560,11 @@ Response 502: the provider refused the mail (not a busy provider); do not retry
 Response 503: nothing was sent and a retry may work: the provider answered 429 or 5xx,
               could not be reached, or this service has no RESEND_API_KEY set
 ```
+Files (WALLET-35): the Hub mails a wallet statement's CSV this way. All of a mail's
+files together may not decode to more than 12 MiB (PROVISIONAL, `RELAY_ATTACHMENT_MAX_BYTES`;
+a bigger set is a plain 400 and nothing is sent). This route alone takes a JSON body of
+up to 17 MB for that; every other route keeps Express's 100 kb. The bytes are passed to the
+provider as they came, and a mail with no files is sent exactly as before.
 The daily cap is `MAIL_RELAY_DAILY_CAP` (default 5000, PROVISIONAL: it is a guess
 until the owner sets it against the Resend plan). It counts mails sent in one
 UTC day for every caller together, in this server's memory, so a restart starts
