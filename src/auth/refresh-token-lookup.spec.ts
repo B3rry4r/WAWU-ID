@@ -222,7 +222,7 @@ describe('AUTH-08: refresh and sign-out find the token by its id', () => {
   });
 
   describe('speed however many tokens the account holds', () => {
-    it('with 200 stored refresh tokens, a refresh and a sign-out each answer in under a second', async () => {
+    it('with 200 stored refresh tokens, a refresh and a sign-out each pay one hash check, not 200', async () => {
       fillWithOtherTokens('alice', 199);
       const mine = await signIn('alice'); // the 200th, and the newest
       expect(prisma.rows).toHaveLength(200);
@@ -243,11 +243,15 @@ describe('AUTH-08: refresh and sign-out find the token by its id', () => {
       console.log(
         `AUTH-08 timing, 200 stored tokens: refresh ${refreshMs} ms (${refreshVerifies} hash checks), sign-out ${logoutMs} ms (${logoutVerifies} hash checks)`,
       );
-      expect(refreshMs).toBeLessThan(1000);
-      expect(logoutMs).toBeLessThan(1000);
+      // The proof is the count of hash checks, which a busy machine cannot
+      // change; the milliseconds above are printed for the record only (FIX-13,
+      // AUTH-08 F-3: a wall-clock line here failed whenever the box was loaded).
       expect(refreshVerifies).toBe(1);
       expect(logoutVerifies).toBe(1);
-      // The refresh really happened and the sign-out really signed out.
+      // The refresh really happened and the sign-out really signed out: the
+      // 199 other rows are untouched, the spent one is gone, its replacement
+      // is stored, and the signed-out one is gone.
+      expect(prisma.rows).toHaveLength(200);
       expect(await refreshes(mine.refreshToken)).toBe(false);
       expect(await refreshes(next.refreshToken)).toBe(false);
     });
