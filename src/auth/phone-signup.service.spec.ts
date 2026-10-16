@@ -526,6 +526,75 @@ describe('PhoneSignupService', () => {
     });
   });
 
+  // ── JOIN-03 round 6, N30: a resend in flight when the Hub anonymises ───────
+
+  describe("a resend that meets the Hub's anonymise answers as a resend after it and leaves no counter row (N30)", () => {
+    /**
+     * The Hub's anonymise commits after the resend has found the sign-up and
+     * before it has spent anything: it removes the code row, closes the account
+     * and clears the counters keyed on the number, then the resend's own
+     * reservations write them again.
+     */
+    function anonymiseBeforeTheResendSpends() {
+      const real = limits.hit.bind(limits) as MemoryRateLimiter['hit'];
+      let closed = false;
+      return jest
+        .spyOn(limits, 'hit')
+        .mockImplementation(async (scope, key, limit, windowSeconds) => {
+          if (!closed && scope === 'sms-phone-gap') {
+            closed = true;
+            Object.assign(prisma.users[0], {
+              status: 'banned',
+              deletedAt: new Date(),
+              phone: 'deleted:u1',
+              email: null,
+            });
+            prisma.users[0].phoneVerification = null;
+            await limits.forget('sms-phone-gap', PHONE);
+            await limits.forget('sms-phone-day', PHONE);
+          }
+          return real(scope, key, limit, windowSeconds);
+        });
+    }
+
+    it('answers what a resend made after the anonymise answers, and texts nothing', async () => {
+      const { attempt } = await begin();
+      later(61);
+      const spy = anonymiseBeforeTheResendSpends();
+      const inFlight = await service.start(PHONE, attempt, IP);
+      spy.mockRestore();
+      const after = await service.start(PHONE, attempt, IP);
+      await flush();
+      expect(inFlight).toEqual(after);
+      expect(inFlight).toEqual({ phone: PHONE, expiresIn: 300, resendIn: 60 });
+      expect(sms.sent).toHaveLength(1);
+    });
+
+    it("leaves no counter row keyed on the closed account's number, and gives back the shared day's text", async () => {
+      const { attempt } = await begin();
+      later(61);
+      const spy = anonymiseBeforeTheResendSpends();
+      await service.start(PHONE, attempt, IP);
+      spy.mockRestore();
+      expect(limits.hasCounter('sms-phone-gap', PHONE)).toBe(false);
+      expect(limits.hasCounter('sms-phone-day', PHONE)).toBe(false);
+      // the whole service's count is what the one sign-up text made it: 1 of a limit of 2 is not full
+      expect((await limits.isFull('sms-global', 'all', 2, 86400)).allowed).toBe(
+        true,
+      );
+    });
+
+    it('the control: a resend that finds its sign-up still there texts the new code and counts it', async () => {
+      const { attempt } = await begin();
+      later(61);
+      await service.start(PHONE, attempt, IP);
+      await flush();
+      expect(sms.sent).toHaveLength(2);
+      expect(limits.hasCounter('sms-phone-gap', PHONE)).toBe(true);
+      expect(limits.hasCounter('sms-phone-day', PHONE)).toBe(true);
+    });
+  });
+
   it('does not treat a legacy account with the same phone as pending', async () => {
     prisma.users.push(legacy({ phone: '08099900011' }));
     const body = await failure(

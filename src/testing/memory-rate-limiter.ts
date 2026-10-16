@@ -73,6 +73,17 @@ export class MemoryRateLimiter extends RateLimiter {
     return Promise.resolve();
   }
 
+  dropIfEmpty(scope: string, key: string): Promise<void> {
+    const c = this.counters.get(`${scope}|${key}`);
+    if (c && c.count <= 0) this.counters.delete(`${scope}|${key}`);
+    return Promise.resolve();
+  }
+
+  /** Is there a counter row for this scope and key (a spec reads what a request left behind)? */
+  hasCounter(scope: string, key: string): boolean {
+    return this.counters.has(`${scope}|${key}`);
+  }
+
   /**
    * Runs once a guess has been taken, before it is answered: a spec's way to
    * let something happen to the account while a confirm is in flight.

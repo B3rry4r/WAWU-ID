@@ -52,6 +52,14 @@ export abstract class RateLimiter {
   abstract forget(scope: string, key: string): Promise<void>;
 
   /**
+   * Remove the counter's row when nothing is counted in it (every use given
+   * back). A row at zero is the same as no row to the limiter; this is for a
+   * request that wrote the row and then found it had no business to, so it
+   * leaves nothing keyed on the number or address behind (JOIN-03 round 6, N30).
+   */
+  abstract dropIfEmpty(scope: string, key: string): Promise<void>;
+
+  /**
    * Take one wrong-code guess for a phone number, atomically. Denied while the
    * wait is running and once the day's cap is spent.
    */
@@ -127,6 +135,12 @@ export class DbRateLimiter extends RateLimiter {
 
   async forget(scope: string, key: string): Promise<void> {
     await this.prisma.rateCounter.deleteMany({ where: { scope, key } });
+  }
+
+  async dropIfEmpty(scope: string, key: string): Promise<void> {
+    await this.prisma.rateCounter.deleteMany({
+      where: { scope, key, count: { lte: 0 } },
+    });
   }
 
   async claimGuess(phone: string, rules: GuessRules): Promise<GuessClaim> {

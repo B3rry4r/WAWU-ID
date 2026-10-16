@@ -363,7 +363,7 @@ export class PhoneSignupService {
 
     const now = new Date();
     const emailCode = this.newCode();
-    await this.prisma.phoneVerification.update({
+    const stored = await this.prisma.phoneVerification.updateMany({
       where: { id: pending.id },
       data: {
         codeHash,
@@ -374,6 +374,20 @@ export class PhoneSignupService {
           : {}),
       },
     });
+    if (stored.count === 0) {
+      // The sign-up went between the lookup above and now: the Hub anonymised
+      // the account, a newer sign-up replaced it, or its code was confirmed
+      // (JOIN-03 round 6, N30). A resend made after that gets the plain answer
+      // for a sign-up nobody holds, no text and no counter, and so does this
+      // one: the three uses it reserved are given back, and the rows it wrote
+      // for the number go (the anonymise had already cleared them).
+      await this.limits.release('sms-phone-gap', phone);
+      await this.limits.release('sms-phone-day', phone);
+      await this.limits.release('sms-global', 'all');
+      await this.limits.dropIfEmpty('sms-phone-gap', phone);
+      await this.limits.dropIfEmpty('sms-phone-day', phone);
+      return this.shape(phone);
+    }
     // Not awaited: the answer must not take longer for a real sign-up than for
     // a made-up one.
     void this.deliver(phone, code).catch(async (err: unknown) => {

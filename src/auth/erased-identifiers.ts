@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { createHash } from 'crypto';
 import { normalisePhone, phoneVariants } from '../common/phone.util';
 import { isStoredPhone } from './released-phone';
 
@@ -27,6 +28,14 @@ import { isStoredPhone } from './released-phone';
  * because another account holds it, the new number of a pending phone change)
  * or an address it merely claimed is not its own: the holder's counters, wrong-
  * code budget and code in flight stay.
+ *
+ * JOIN-03 round 6 (D12): "its own" is decided from two reads, and each is taken
+ * under a lock. The account's own row is read after its sign-up code row is
+ * deleted and under the account's row lock, so a confirm that gave it a number
+ * a moment earlier is seen. Who else holds the number is asked under an
+ * advisory lock (`lockErasure`) that every account holding the same number or
+ * address closes under, so two such accounts closed together cannot each read
+ * "the other one holds it" and both leave the rows.
  */
 export interface Identifiers {
   /** Numbers the deleted account holds or proved (stored text, as typed) and the address it holds. */
@@ -169,4 +178,66 @@ export async function otherHolders(
     phones: rows.map((r) => r.phone),
     emails: rows.map((r) => r.email),
   };
+}
+
+/**
+ * The keys two anonymises queue on when the accounts they close hold the same
+ * number or address (JOIN-03 round 6, D12). A number is one key in whatever
+ * spelling it is stored (the G-16 duplicates hold one number in two), an
+ * address one key in any case: the same comparison `erasedKeys` makes to decide
+ * who else holds it.
+ */
+export function erasureLockKeys({ phones, emails }: Identifiers): string[] {
+  const keys = new Set<string>();
+  for (const stored of phones) {
+    if (typeof stored === 'string' && isStoredPhone(stored)) {
+      keys.add(`phone:${numberKey(stored)}`);
+    }
+  }
+  for (const email of emails) {
+    if (typeof email === 'string' && email.trim() !== '') {
+      keys.add(`email:${addressKey(email)}`);
+    }
+  }
+  return [...keys];
+}
+
+/**
+ * The Postgres advisory-lock ids for these keys, smallest first. Every
+ * anonymise takes the ids it needs in this one order, so two of them that share
+ * only some of their numbers or addresses can wait on each other but never in a
+ * circle.
+ */
+export function erasureLockIds(keys: readonly string[]): string[] {
+  const ids = new Set<bigint>();
+  for (const key of keys) {
+    ids.add(
+      createHash('sha256')
+        .update(`wawu-id:erase:${key}`)
+        .digest()
+        .readBigInt64BE(0),
+    );
+  }
+  return [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map(String);
+}
+
+/**
+ * Takes, for the rest of the transaction, the lock every account that holds
+ * one of these numbers or addresses closes under (JOIN-03 round 6, D12). The
+ * anonymise decides which counters, wrong-code budgets and codes in flight are
+ * the account's own by asking who else holds its number, and that answer is
+ * only as good as the moment it is read: two accounts that hold one number and
+ * are closed within milliseconds of each other each read "the other one holds
+ * it" before the other commits, and each leaves the rows, so nobody holds the
+ * number and the rows stay. Under this lock the second one reads after the
+ * first has committed, sees it gone, and clears them. The lock is released by
+ * the commit; no other path takes it.
+ */
+export async function lockErasure(
+  tx: Prisma.TransactionClient,
+  own: Identifiers,
+): Promise<void> {
+  for (const id of erasureLockIds(erasureLockKeys(own))) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${id}::bigint)`;
+  }
 }

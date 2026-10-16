@@ -1,5 +1,8 @@
 import {
   erasedKeys,
+  erasureLockIds,
+  erasureLockKeys,
+  lockErasure,
   otherHolders,
   SIGNUP_EMAIL_BUDGET,
 } from './erased-identifiers';
@@ -235,5 +238,94 @@ describe('otherHolders', () => {
     });
     expect(t.calls).toHaveLength(0);
     expect(out).toEqual({ phones: [], emails: [] });
+  });
+});
+
+/**
+ * JOIN-03 round 6, D12: two accounts that hold one number (the G-16 duplicates,
+ * in two spellings) are closed under one lock, so the second reads who else
+ * holds it after the first has committed.
+ */
+describe('erasureLockKeys and erasureLockIds', () => {
+  it('names a number once, in whatever spelling it is stored', () => {
+    const keys = (phone: string) =>
+      erasureLockKeys({ phones: [phone], emails: [] });
+    const one = keys('+2348031234567');
+    expect(one).toHaveLength(1);
+    for (const spelling of [
+      '08031234567',
+      '2348031234567',
+      '0803 123 4567',
+      '+234-803-123-4567',
+      '002348031234567',
+    ]) {
+      expect(keys(spelling)).toEqual(one);
+    }
+    expect(keys('+2348031234568')).not.toEqual(one);
+  });
+
+  it('names an address once, in any case and with surrounding space', () => {
+    const keys = (email: string) =>
+      erasureLockKeys({ phones: [], emails: [email] });
+    expect(keys(' Ada@Example.test ')).toEqual(keys('ada@example.test'));
+    expect(keys('bob@example.test')).not.toEqual(keys('ada@example.test'));
+  });
+
+  it('does not lock a number and an address that are the same text as one key', () => {
+    const keys = erasureLockKeys({
+      phones: ['+2348031234567'],
+      emails: ['+2348031234567'],
+    });
+    expect(keys).toHaveLength(2);
+  });
+
+  it('names nothing for a marker, an empty text or nothing', () => {
+    expect(
+      erasureLockKeys({
+        phones: ['deleted:me', 'released:me', null, undefined, ''],
+        emails: [null, undefined, ' '],
+      }),
+    ).toEqual([]);
+  });
+
+  it('turns keys into 64-bit ids, smallest first, each once, the same ones every time', () => {
+    const keys = ['phone:+2348031234567', 'email:ada@example.test', 'phone:x'];
+    const ids = erasureLockIds(keys);
+    expect(ids).toEqual(erasureLockIds([...keys].reverse()));
+    expect(ids).toEqual(erasureLockIds([...keys, ...keys]));
+    expect(ids).toHaveLength(3);
+    const big = ids.map((i) => BigInt(i));
+    expect(big).toEqual([...big].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    for (const id of big) {
+      expect(id >= -(2n ** 63n) && id < 2n ** 63n).toBe(true);
+    }
+  });
+});
+
+describe('lockErasure', () => {
+  it('takes one transaction-scoped advisory lock per number or address, in id order, and none when there is nothing to lock', async () => {
+    const taken: string[] = [];
+    const sql: string[] = [];
+    const tx = {
+      $executeRaw: (strings: TemplateStringsArray, id: string) => {
+        sql.push(strings.join('?'));
+        taken.push(id);
+        return Promise.resolve(0);
+      },
+    };
+    const own = {
+      phones: ['0803 123 4567', '+2348031234567'],
+      emails: ['Ada@Example.test'],
+    };
+    await lockErasure(tx as never, own);
+    expect(taken).toEqual(erasureLockIds(erasureLockKeys(own)));
+    expect(taken).toHaveLength(2);
+    for (const text of sql) {
+      expect(text).toBe('SELECT pg_advisory_xact_lock(?::bigint)');
+    }
+
+    taken.length = 0;
+    await lockErasure(tx as never, { phones: ['deleted:me'], emails: [null] });
+    expect(taken).toEqual([]);
   });
 });
