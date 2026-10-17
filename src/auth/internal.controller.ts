@@ -303,7 +303,11 @@ export class InternalController {
     @Body() dto: DittoInviteDto,
   ) {
     this.assertServiceKey(serviceKey);
-    return this.auth.sendDittoInvite(userId, dto.signupUrl, dto.discountPercent);
+    return this.auth.sendDittoInvite(
+      userId,
+      dto.signupUrl,
+      dto.discountPercent,
+    );
   }
 
   /**
@@ -322,7 +326,13 @@ export class InternalController {
     @Body() dto: UnpaidWarningDto,
   ) {
     this.assertServiceKey(serviceKey);
-    return { data: await this.auth.sendUnpaidDeletionWarning(userId, dto.hoursLeft, dto.planUrl) };
+    return {
+      data: await this.auth.sendUnpaidDeletionWarning(
+        userId,
+        dto.hoursLeft,
+        dto.planUrl,
+      ),
+    };
   }
 
   /**
@@ -348,6 +358,31 @@ export class InternalController {
   ) {
     this.assertServiceKey(serviceKey);
     return { data: await this.auth.sendMoneyCheckReport(userId, body) };
+  }
+
+  /**
+   * POST /internal/users/:userId/data-export
+   * Body: { downloadUrl, expiresAt }
+   *
+   * Mails the person the link to download a copy of their data (the Hub's
+   * SETTINGS-04, BACKEND_GAPS G-131), to that account's own proven email
+   * address. Not a mail relay: the Hub names the user and the link, this
+   * service owns the address, the subject and the wording, and a body that
+   * carries anything but the Hub's export link and its deadline is refused
+   * with a 400. Answers 200 `{ data: { emailed: true } }` only after the mail
+   * was handed to the mailer; 404 when there is no such account, 409 when it
+   * has no proven address, 503 when the mailer could not take it, so the Hub
+   * keeps the request and asks again.
+   */
+  @Post('users/:userId/data-export')
+  @HttpCode(HttpStatus.OK)
+  async dataExport(
+    @Headers('x-service-key') serviceKey: string,
+    @Param('userId') userId: string,
+    @Body() body: unknown,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.sendDataExportLink(userId, body) };
   }
 
   private assertServiceKey(provided?: string): void {

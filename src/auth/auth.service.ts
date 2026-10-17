@@ -20,6 +20,7 @@ import {
   type VerificationTickName,
 } from '../common/verification.util';
 import { MailSendError, MailService } from '../mail/mail.service';
+import { parseDataExportLink } from '../mail/data-export-link';
 import { parseMoneyCheckReport } from '../mail/money-check-report';
 import { OtpService } from '../otp/otp.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -1335,6 +1336,58 @@ export class AuthService {
       if (!(err instanceof MailSendError)) throw err;
       throw new ServiceUnavailableException(
         'The report could not be handed to the mailer. Try again.',
+      );
+    }
+    return { emailed: true };
+  }
+
+  /**
+   * The link to a person's data export, mailed to the one person the Hub
+   * names (task FIX-53, the Hub's SETTINGS-04, BACKEND_GAPS G-131). Same
+   * split as the other internal mails: the Hub names the user and the link,
+   * this service owns the address and the wording, and a body that carries
+   * anything but the export link and its deadline is refused
+   * (`parseDataExportLink`).
+   *
+   * A mail that was not sent is never a 200: the Hub marks the request `sent`
+   * on a 200 and the person gets nothing otherwise, so: 400 for a body it
+   * will not take, 404 for no such account, 409 for an account with no proven
+   * email address (the account's own address is the only one ever mailed),
+   * 503 when the mailer could not hand the mail on. The Hub keeps the request
+   * `pending` on any of them and asks again.
+   */
+  async sendDataExportLink(
+    userId: string,
+    body: unknown,
+  ): Promise<{ emailed: true }> {
+    const link = parseDataExportLink(body);
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+      select: {
+        email: true,
+        firstName: true,
+        emailVerified: true,
+        phoneVerifiedAt: true,
+      },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    const exportTo = this.provenEmail(user);
+    if (!exportTo) {
+      throw new ConflictException(
+        'This account has no verified email address to send the export to.',
+      );
+    }
+    try {
+      await this.mail.sendDataExportLink(
+        exportTo,
+        user.firstName,
+        link.downloadUrl,
+        link.expiresAt,
+      );
+    } catch (err) {
+      if (!(err instanceof MailSendError)) throw err;
+      throw new ServiceUnavailableException(
+        'The export link could not be handed to the mailer. Try again.',
       );
     }
     return { emailed: true };
