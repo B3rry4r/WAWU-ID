@@ -363,6 +363,18 @@ describe('POST /internal/users/:userId/money-check-report', () => {
       );
     });
 
+    it('a notice or a check named like a property every object has (constructor) is an ordinary unknown name: 200, named by its name, never a 500 (RF-3)', async () => {
+      const b = hubBody({ notices: { constructor: { count: 2 } } });
+      b.checks[0].id = 'constructor';
+      await post(OWNER, b).expect(200);
+      expect(sent[sent.length - 1].html).toContain('Constructor: 2.');
+      expect(sent[sent.length - 1].html).toContain('Constructor');
+      expect(noticeSentence('constructor', { count: 2 })).toBe(
+        'Constructor: 2.',
+      );
+      expect(labelOf('constructor')).toBe('Constructor');
+    });
+
     it('names a notice it has no sentence for by its name and count', async () => {
       await post(
         OWNER,

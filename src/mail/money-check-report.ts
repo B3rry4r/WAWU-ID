@@ -369,7 +369,8 @@ export const STATE_LABELS: Record<ReportCheckState, string> = {
 
 /** A name made readable: a known check, or its id with spaces. */
 export function labelOf(id: string): string {
-  if (CHECK_LABELS[id]) return CHECK_LABELS[id];
+  // Own keys only: an id named `constructor` is not a label (SWEEP-MONEY, MONEY-16 RF-3).
+  if (Object.hasOwn(CHECK_LABELS, id)) return CHECK_LABELS[id];
   const spaced = id.replace(/_/g, ' ');
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
@@ -400,8 +401,7 @@ const NOTICE_SENTENCES: Record<string, (n: ReportNotice) => string> = {
 
 /** One line for a notice: a known one in plain words, any other by name and count. */
 export function noticeSentence(key: string, n: ReportNotice): string {
-  const known = NOTICE_SENTENCES[key];
-  if (known) return known(n);
+  if (Object.hasOwn(NOTICE_SENTENCES, key)) return NOTICE_SENTENCES[key](n);
   return `${labelOf(key)}: ${n.count}${n.amountKobo ? `, ${nairaOf(n.amountKobo)}` : ''}.`;
 }
 
