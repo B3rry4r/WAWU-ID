@@ -1427,6 +1427,8 @@ export class AuthService {
         firstName: true,
         emailVerified: true,
         phoneVerifiedAt: true,
+        status: true,
+        deletedAt: true,
       },
     });
     if (!user) throw new NotFoundException('User not found');
