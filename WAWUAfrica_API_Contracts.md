@@ -401,6 +401,45 @@ was proven, or to accounts that never went through mobile sign-up. Changing a
 phone number through the internal routes writes the phone and nothing else, so a
 mobile account keeps its right to sign in.
 
+### Deleting an account: 30 days, cancelled by signing in (R-17, SETTINGS-08)
+The Hub schedules a deletion (wallet empty first, wallet frozen, content hidden;
+`DELETE /api/hub/account`) and tells WAWU ID with
+`POST /internal/users/:wawuId/mark-deletion`. From then on:
+
+- The account is `pending_deletion` for 30 days. Every session is revoked, an
+  access token issued before the mark never opens this service's own routes
+  again (not even after a cancel), and no service mail goes to the account.
+- A sign-in with the right password (`POST /auth/login`), a good phone code
+  (`POST /auth/otp/verify`) or an SMS password reset during the 30 days cancels
+  the deletion: WAWU ID asks the Hub (`POST /api/hub/account/cancel-deletion`,
+  with a two-minute token of that person, nothing else) and only when the Hub has
+  cancelled, or has nothing scheduled, restores the account and answers as an
+  ordinary sign-in. Two sign-ins together tell the Hub once; the second waits for
+  the first, then signs in as an ordinary account.
+- Refusals: `403 ACCOUNT_DELETION_PERIOD_ENDED` (the 30 days are over; the Hub is
+  not asked), `403 ACCOUNT_DELETION_IN_PROGRESS` (the Hub's purge has started; `message`
+  is the Hub's own sentence), `503 DELETION_CANCEL_UNAVAILABLE` (the Hub did not
+  settle it; nothing changed here or there, sign in again), `503 DELETION_CANCEL_BUSY`
+  (another sign-in is cancelling; sign in again in a moment). Any other route that
+  would open a session for such an account answers `403 ACCOUNT_DELETION_PENDING`.
+- Day 30 is the Hub's: its purge sweep deletes its data, then calls
+  `DELETE /internal/users/:wawuId?mode=anonymize`. WAWU ID does not delete the
+  identity on its own clock (only the Hub sees money that is still owed). Asked
+  twice, even together, the scrub runs once and the second answer is the same.
+
+### INTERNAL — POST /internal/users/:wawuId/mark-deletion
+```json
+Request (optional body): { "purgeAfter": "2026-11-16T16:45:43.222Z" }
+Response 200: { "data": { "id": "uuid", "status": "pending_deletion" } }
+Response 401: missing or wrong X-Service-Key
+Response 404: no such account
+```
+Idempotent: asked again the dates do not move (a sign-in that is cancelling at that
+moment is told to try again). `purgeAfter` is the Hub's own end date; it is used
+when it is within a day of 30 days from the call, else ignored, and a Hub that sends
+no body gets 30 days from the call. A banned or suspended account keeps its status
+(a deletion never lifts a ban), and an anonymised one is left exactly as it is.
+
 ### POST /auth/login
 ```json
 Request:
