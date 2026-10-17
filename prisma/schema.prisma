@@ -124,6 +124,13 @@ model WawuUser {
   // (status=pending_deletion); the hub finalizes ~48h later via the DELETE route.
   deletedAt     DateTime?           @map("deleted_at")
 
+  /// SETTINGS-08. Access tokens issued BEFORE this instant stop opening
+  /// WAWU ID's own routes (SessionReader). Stamped when an account enters its
+  /// 30 days (the mark rounds it UP to the next whole second, because a token
+  /// carries whole seconds) and never cleared: a sign-in that cancels the
+  /// deletion brings the account back, not the sessions that were revoked.
+  sessionsRevokedAt DateTime?       @map("sessions_revoked_at")
+
   createdAt     DateTime            @default(now()) @map("created_at")
   updatedAt     DateTime            @updatedAt @map("updated_at")
   refreshTokens    RefreshToken[]
@@ -135,6 +142,7 @@ model WawuUser {
   phoneVerification PhoneVerification?
   signupProgress   SignupProgress?
   signupEmailCode  SignupEmailCode?
+  deletionWindow   DeletionWindow?
 
   @@map("wawu_users")
 }
@@ -378,4 +386,21 @@ model Consent {
   @@index([userId, slug])
   @@index([slug, version])
   @@map("consents")
+}
+
+/// SETTINGS-08. The 30 days of a deletion the Hub scheduled (R-17), one row
+/// while the account is `pending_deletion`. `dueAt` is when a sign-in stops
+/// being able to cancel it; the Hub's purge sweep, not this service, deletes
+/// the identity (it alone can see money that is still owed). The claim fields
+/// make "the Hub is told once" hold when two sign-ins arrive together.
+model DeletionWindow {
+  userId          String    @id @map("user_id") @db.Uuid
+  markedAt        DateTime  @map("marked_at")
+  dueAt           DateTime  @map("due_at")
+  cancelClaimId   String?   @map("cancel_claim_id") @db.Uuid
+  cancelClaimedAt DateTime? @map("cancel_claimed_at")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("deletion_windows")
 }

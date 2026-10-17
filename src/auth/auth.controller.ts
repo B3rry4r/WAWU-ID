@@ -200,12 +200,18 @@ export class AuthController {
     status: 403,
     type: ErrorBody,
     description:
-      'EMAIL_NOT_VERIFIED, PHONE_NOT_CONFIRMED (a sign-up whose phone code was never entered: resume it).',
+      'EMAIL_NOT_VERIFIED, PHONE_NOT_CONFIRMED (a sign-up whose phone code was never entered: resume it), ACCOUNT_DELETION_PERIOD_ENDED (the 30 days of a deletion are over, nothing is restored), ACCOUNT_DELETION_IN_PROGRESS (the purge has started; `message` is the Hub\'s own sentence, show it as it is).',
   })
   @ApiResponse({
     status: 404,
     type: ErrorBody,
     description: 'USER_NOT_IN_WAWUID.',
+  })
+  @ApiResponse({
+    status: 503,
+    type: ErrorBody,
+    description:
+      'An account in its 30 days of deletion signed in, and cancelling the deletion was not settled: DELETION_CANCEL_UNAVAILABLE (the Hub did not answer; nothing changed, sign in again) or DELETION_CANCEL_BUSY (another sign-in is cancelling right now; sign in again in a moment). A right password during the 30 days cancels the deletion and answers as an ordinary sign-in.',
   })
   async login(@Body() dto: LoginDto) {
     return { data: await this.auth.login(dto) };

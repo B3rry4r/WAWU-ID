@@ -26,6 +26,7 @@ import { UpdateVerificationDto } from './dto/update-verification.dto';
 import { LookupUsersDto } from './dto/lookup-users.dto';
 import { DittoInviteDto } from './dto/ditto-invite.dto';
 import { UnpaidWarningDto } from './dto/unpaid-warning.dto';
+import { MarkDeletionDto } from './dto/mark-deletion.dto';
 
 /**
  * Service-to-service endpoints. Guarded by the shared X-Service-Key header
@@ -270,19 +271,29 @@ export class InternalController {
 
   /**
    * POST /internal/users/:userId/mark-deletion
-   * Starts the cross-ecosystem account-deletion grace period: marks the account
-   * `pending_deletion`, stamps `deletedAt`, and revokes all sessions + reset
-   * tokens. Same X-Service-Key guard as the other internal routes. Idempotent.
-   * The hub finalizes ~48h later via DELETE /internal/users/:userId?mode=anonymize.
+   * Body (optional): { purgeAfter } the Hub's own end date of the 30 days (ISO).
+   *
+   * Starts the cross-ecosystem account-deletion grace period (R-17): marks the
+   * account `pending_deletion`, stamps `deletedAt`, revokes all sessions + reset
+   * tokens and records when the 30 days end. Same X-Service-Key guard as the
+   * other internal routes. Idempotent: asked again, the dates do not move. A
+   * sign-in before the end cancels it with the Hub; the Hub finalizes after the
+   * end via DELETE /internal/users/:userId?mode=anonymize.
    */
   @Post('users/:userId/mark-deletion')
   @HttpCode(HttpStatus.OK)
   async markDeletion(
     @Param('userId') userId: string,
+    @Body() dto: MarkDeletionDto,
     @Headers('x-service-key') serviceKey?: string,
   ) {
     this.assertServiceKey(serviceKey);
-    return { data: await this.auth.markPendingDeletion(userId) };
+    return {
+      data: await this.auth.markPendingDeletion(
+        userId,
+        dto?.purgeAfter ? new Date(dto.purgeAfter) : null,
+      ),
+    };
   }
 
   /**
