@@ -702,6 +702,33 @@ report until WAWU ID has taken it, and the one alert that says money is not wher
 it should be must not be lost to a quiet success. The route is not in
 `contract/openapi.json` (the Hub is its only caller, not the app).
 
+### INTERNAL — POST /internal/users/:wawuId/data-export
+Header: `X-Service-Key: <secret>`
+
+The Hub's account data export (SETTINGS-04; this route is FIX-53, BACKEND_GAPS
+G-131) has this service mail the person the link to download their data. Same
+split as the mails above: the Hub names the person and the link; WAWU ID owns
+the address (the account's own proven email, nothing else), the subject and the
+wording. It is not a mail relay: the body must be exactly the Hub's export link
+and a deadline, or it is refused with a 400. The link must be https (or http to
+this machine outside production), on the path
+`/api/hub/settings/privacy/export/download`, with one query value, `token`, and
+no sign-in name or fragment; the deadline must be in the future and within 7
+days. The link in the mail is rebuilt from the checked parts, never echoed.
+
+```json
+Request: { "downloadUrl": "https://api.wawuafrica.com/api/hub/settings/privacy/export/download?token=<signed>",
+           "expiresAt": "2026-10-20T13:05:00.000Z" }
+Response 200: { "data": { "emailed": true } }   // only after the mail was handed to the mailer
+Response 400: a body this route will not take (a plain sentence naming the field)
+Response 401: missing or wrong X-Service-Key
+Response 404: no such account
+Response 409: the account has no proven email address
+Response 503: the mailer could not take it; the Hub keeps the request and asks again
+```
+"Nothing was sent" is never a 200: the Hub marks the request `sent` on a 200.
+The route is not in `contract/openapi.json` (the Hub is its only caller).
+
 ---
 
 ## 2. FEED & POSTS

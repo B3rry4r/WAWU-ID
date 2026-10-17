@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
+import { exportDeadlineText } from './data-export-link';
 import {
   labelOf,
   type MoneyCheckReportMail,
@@ -437,6 +438,43 @@ export class MailService {
         bodyHtml: body,
         cta: { label: 'Pick a plan', url: planUrl },
       }),
+    );
+  }
+
+  /**
+   * The link to download a person's data export (task FIX-53, the Hub's
+   * SETTINGS-04), to the one person the Hub named. The Hub gives the checked
+   * link and when it stops working (`parseDataExportLink`); this service
+   * writes the mail. Strict: a mail that could not be handed to the transport
+   * throws, so the Hub keeps the request and sends it again.
+   */
+  async sendDataExportLink(
+    email: string,
+    firstName: string | null | undefined,
+    downloadUrl: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    const deadline = exportDeadlineText(expiresAt);
+    const body = [
+      this.p('Your copy of your WAWUAfrica data is ready to download.'),
+      this.p(
+        `The link works until ${this.escape(deadline)} (Lagos time). After that you can ask for a new copy in Settings.`,
+      ),
+      this.p(
+        'Anyone with this link can download your data, so keep it to yourself. If you did not ask for it, you can ignore this email, and it is worth changing your password.',
+      ),
+    ].join('');
+
+    await this.send(
+      email,
+      'Your WAWUAfrica data is ready to download',
+      this.layout({
+        preheader: `Your data export is ready. The link works until ${deadline}.`,
+        firstName,
+        bodyHtml: body,
+        cta: { label: 'Download my data', url: this.escape(downloadUrl) },
+      }),
+      true,
     );
   }
 
