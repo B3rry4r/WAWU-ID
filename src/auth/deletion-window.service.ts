@@ -31,6 +31,13 @@ export interface SignInOutcome {
   cancelled: boolean;
 }
 
+/** Waits until a token issued now is newer than the account's revocation stamp (a stamp is rounded up to the next whole second). */
+async function waitForRevocationStamp(user: WawuUser): Promise<void> {
+  if (!user.sessionsRevokedAt) return;
+  const wait = user.sessionsRevokedAt.getTime() - Date.now();
+  if (wait > 0) await sleep(wait + 5);
+}
+
 type Claim =
   | { kind: 'not_pending'; user: WawuUser | null }
   | { kind: 'ended' }
@@ -170,6 +177,10 @@ export class DeletionWindowService {
     }
     if (claim.kind === 'not_pending') {
       if (!claim.user) throw new NotFoundException('User not found');
+      // A sign-in that waited behind the one that cancelled gets the restored
+      // account at once; its tokens must also be newer than the revocation
+      // stamp, as the claimer's are (SWEEP-AUTH SETTINGS-08 L1).
+      await waitForRevocationStamp(claim.user);
       return { user: claim.user, cancelled: false };
     }
     if (claim.kind === 'ended') {
@@ -218,10 +229,7 @@ export class DeletionWindowService {
       throw deletionRefusal(503, 'DELETION_CANCEL_BUSY', BUSY_MESSAGE);
     }
     // Tokens issued from here on are newer than the revocation stamp.
-    if (restored.sessionsRevokedAt) {
-      const wait = restored.sessionsRevokedAt.getTime() - Date.now();
-      if (wait > 0) await sleep(wait + 5);
-    }
+    await waitForRevocationStamp(restored);
     return { user: restored, cancelled: true };
   }
 
