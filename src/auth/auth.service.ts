@@ -22,6 +22,7 @@ import {
 import { MailSendError, MailService } from '../mail/mail.service';
 import { parseDataExportLink } from '../mail/data-export-link';
 import { parseMoneyCheckReport } from '../mail/money-check-report';
+import { parsePinResetCode } from '../mail/pin-reset-code';
 import { OtpService } from '../otp/otp.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActivateDto } from './dto/activate.dto';
@@ -68,6 +69,9 @@ export interface UserResponse {
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 const PHONE_CHANGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const EMAIL_VERIFY_TTL_MS = 5 * 60 * 1000; // 5 minutes, matches OtpService's phone-OTP TTL
+/** The shape of a user id (the column is a uuid; a malformed id is no account, not a 500). */
+const UUID_SHAPE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class AuthService {
@@ -1452,6 +1456,69 @@ export class AuthService {
       );
     }
     return { emailed: true };
+  }
+
+  /**
+   * The wallet PIN reset code, mailed to the one person the Hub names (task
+   * AUTH-09, the Hub's BACKEND_GAPS G-400, ruling R-72: the PIN reset code goes
+   * by email at launch). Same split as the other internal mails: the Hub makes
+   * the code and names the person, this service owns the address and the
+   * wording, and a body that is not a 6-digit code and its life in minutes is
+   * refused (`parsePinResetCode`).
+   *
+   * A code that was not mailed is never a 200: the Hub counts a 200 as sent and
+   * the person waits for it. So: 400 for a body it will not take, 404 for no
+   * such account or one deleted or in its 30 days of deletion (nothing is sent
+   * to it, SETTINGS-08), 409 for an account with no proven email address (the
+   * account's own address is the only one ever mailed), 503 when the mailer
+   * could not hand the mail on. The code and the address are never logged and
+   * never in the answer.
+   */
+  async sendPinResetCode(
+    userId: string,
+    body: unknown,
+  ): Promise<{ sent: true }> {
+    const { code, expiresInMinutes } = parsePinResetCode(body);
+    // The id column is a uuid: anything else is an account that does not exist,
+    // and must not reach the database as a 500.
+    if (!UUID_SHAPE.test(userId)) throw new NotFoundException('User not found');
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+      select: {
+        email: true,
+        emailVerified: true,
+        phoneVerifiedAt: true,
+        status: true,
+        deletedAt: true,
+      },
+    });
+    if (!user || isDeletedOrDeleting(user)) {
+      throw new NotFoundException('User not found');
+    }
+    const resetTo = this.provenEmail(user);
+    if (!resetTo) {
+      throw new ConflictException(
+        'This account has no verified email address to send the code to.',
+      );
+    }
+    try {
+      await this.mail.sendOtpCode(
+        resetTo,
+        code,
+        'reset your transaction PIN',
+        true,
+        {
+          expiresInMinutes,
+          logRecipient: false,
+        },
+      );
+    } catch (err) {
+      if (!(err instanceof MailSendError)) throw err;
+      throw new ServiceUnavailableException(
+        'The code could not be handed to the mailer. Try again.',
+      );
+    }
+    return { sent: true };
   }
 
   async sendDittoInvite(

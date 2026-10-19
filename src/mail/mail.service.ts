@@ -65,6 +65,14 @@ interface LayoutOptions {
   cta?: { label: string; url: string };
 }
 
+/** What a one-time code mail can be told beyond the code (every field is optional). */
+export interface OtpCodeOptions {
+  /** How long the code lives, in whole minutes, as the mail says it. Default 10. */
+  expiresInMinutes?: number;
+  /** false keeps the recipient's address out of the mailer's log lines. Default true. */
+  logRecipient?: boolean;
+}
+
 /**
  * The mail was not handed to the transport: no transport is configured, or
  * Resend refused or could not be reached. Thrown only to a caller that asked
@@ -151,6 +159,7 @@ export class MailService {
     subject: string,
     html: string,
     strict = false,
+    logRecipient = true,
   ): Promise<void> {
     if (!this.resend) {
       if (strict) throw new MailSendError('no mail transport is configured');
@@ -177,9 +186,15 @@ export class MailService {
       });
       // Resend answers an error as data, not as a throw.
       if (result.error) throw new Error(result.error.message);
-      this.logger.log(`Email sent: ${to}`);
+      this.logger.log(logRecipient ? `Email sent: ${to}` : 'Email sent');
     } catch (err) {
-      this.logger.error(`Email failed to ${to}: ${String(err)}`);
+      // A mail that must not name its recipient in the logs also keeps the
+      // provider's own error text out of them: it can echo the address.
+      this.logger.error(
+        logRecipient
+          ? `Email failed to ${to}: ${String(err)}`
+          : 'Email failed (the provider did not take it)',
+      );
       if (strict) throw new MailSendError('the mail could not be sent');
     }
   }
@@ -788,8 +803,11 @@ export class MailService {
     code: string,
     purpose?: string,
     strict = false,
+    options: OtpCodeOptions = {},
   ): Promise<void> {
     const reason = purpose ?? 'complete your verification';
+    const minutes = options.expiresInMinutes ?? 10;
+    const lives = `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
     const body = [
       this.p(`Use the code below to ${this.escape(reason)}.`),
       `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:24px auto;">
@@ -798,7 +816,7 @@ export class MailService {
          </tr>
        </table>`,
       this.p(
-        'This code expires in 10 minutes. Please do not share it with anyone.',
+        `This code expires in ${lives}. Please do not share it with anyone.`,
       ),
       this.p(
         'If you did not request this code, you can safely ignore this email. Your account remains secure.',
@@ -809,10 +827,11 @@ export class MailService {
       email,
       'Your WAWUAfrica verification code',
       this.layout({
-        preheader: 'Your WAWUAfrica verification code (expires in 10 minutes).',
+        preheader: `Your WAWUAfrica verification code (expires in ${lives}).`,
         bodyHtml: body,
       }),
       strict,
+      options.logRecipient ?? true,
     );
   }
 

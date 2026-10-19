@@ -768,6 +768,34 @@ Response 503: the mailer could not take it; the Hub keeps the request and asks a
 "Nothing was sent" is never a 200: the Hub marks the request `sent` on a 200.
 The route is not in `contract/openapi.json` (the Hub is its only caller).
 
+### INTERNAL — POST /internal/users/:wawuId/pin-reset-code
+Header: `X-Service-Key: <secret>`
+
+The Hub's wallet PIN reset (Forgot PIN) has this service mail the person the
+code (AUTH-09, BACKEND_GAPS G-400, ruling R-72: the PIN reset code goes by
+email at launch). Same split as the mails above: the Hub makes the code and
+names the person; WAWU ID owns the address (the account's own proven email,
+nothing else), the subject and the wording. It is not a mail relay: the body is
+a 6-digit code and how long it lives, and nothing else in it reaches the mail.
+The mail is the account's one-time code mail, saying the code is to reset the
+transaction PIN and how many minutes it lives. The code and the address are
+never logged and never in an answer.
+
+```json
+Request: { "code": "482915", "expiresInMinutes": 5 }   // code: 6 digits; minutes: whole, 1 to 60
+Response 200: { "data": { "sent": true } }   // only after the mail was handed to the mailer
+Response 400: a body this route will not take (a plain sentence naming the field)
+Response 401: missing or wrong X-Service-Key
+Response 404: no such account (an id that is not a uuid too), or one deleted or in its 30 days of deletion
+Response 409: the account has no proven email address
+Response 503: the mailer could not take it; the code stays usable until the Hub opens Resend
+```
+"Nothing was sent" is never a 200: the Hub counts a 200 as sent. Any 4xx is
+"not sent" to the Hub (the code never works); a 5xx is "may have been sent" (the
+code stays usable until Resend opens). The route is not in `contract/openapi.json`
+(the Hub is its only caller). The backend's `mock-wawu-id` serves the same 200,
+400, 401 and 404 answers.
+
 ---
 
 ## 2. FEED & POSTS

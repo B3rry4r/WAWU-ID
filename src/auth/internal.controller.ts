@@ -396,6 +396,32 @@ export class InternalController {
     return { data: await this.auth.sendDataExportLink(userId, body) };
   }
 
+  /**
+   * POST /internal/users/:userId/pin-reset-code
+   * Body: { code, expiresInMinutes }
+   *
+   * Mails the person the code that resets their wallet PIN (task AUTH-09, the
+   * Hub's BACKEND_GAPS G-400, ruling R-72: the PIN reset code goes by email at
+   * launch), to that account's own proven email address. Not a mail relay: the
+   * Hub makes the code and names the person, this service owns the address, the
+   * subject and the wording, and a body that is not a 6-digit code and how long
+   * it lives is refused with a 400. Answers 200 `{ data: { sent: true } }` only
+   * after the mail was handed to the mailer; 404 when there is no such account
+   * (or it is deleted or being deleted), 409 when it has no proven address, 503
+   * when the mailer could not take it. The code and the address are never
+   * logged and never in the answer.
+   */
+  @Post('users/:userId/pin-reset-code')
+  @HttpCode(HttpStatus.OK)
+  async pinResetCode(
+    @Headers('x-service-key') serviceKey: string,
+    @Param('userId') userId: string,
+    @Body() body: unknown,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.sendPinResetCode(userId, body) };
+  }
+
   private assertServiceKey(provided?: string): void {
     const expected = this.config.get<string>('INTERNAL_SERVICE_KEY') ?? '';
     if (!expected || !this.safeEqual(provided ?? '', expected)) {
