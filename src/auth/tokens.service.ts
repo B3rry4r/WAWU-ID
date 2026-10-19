@@ -148,6 +148,30 @@ export class TokensService {
   }
 
   /**
+   * A signed access token for `user`, nothing stored. `expiresIn` defaults to
+   * the configured lifetime; SETTINGS-08 asks for two minutes when it speaks
+   * to the Hub on the person's behalf.
+   */
+  async signAccessToken(
+    user: WawuUser,
+    expiresIn?: ExpiresIn,
+  ): Promise<string> {
+    // `issuer` lets every resource server confirm a token came from THIS
+    // identity service rather than merely being signed by some key in the
+    // JWKS. Emitted only when configured, and additive: verifiers that do not
+    // check `iss` ignore it, so this is safe to ship ahead of them.
+    const issuer = this.config.get<string>('JWT_ISSUER');
+    const lifetime =
+      expiresIn ?? this.config.getOrThrow<ExpiresIn>('JWT_EXPIRES_IN');
+    return this.jwt.signAsync(this.buildAccessPayload(user), {
+      algorithm: 'RS256',
+      expiresIn: lifetime,
+      keyid: this.jwks.kid,
+      ...(issuer ? { issuer } : {}),
+    });
+  }
+
+  /**
    * Issue a fresh access+refresh pair and persist the refresh-token hash.
    * Housekeeping rides on it: the account's expired records are swept first,
    * best effort (see deleteExpiredRefreshTokens).
@@ -176,18 +200,20 @@ export class TokensService {
     // pending sign-up (all web and legacy rows) are not touched.
     await this.refuseIfPhonePending(user, db);
 
-    // `issuer` lets every resource server confirm a token came from THIS
-    // identity service rather than merely being signed by some key in the
-    // JWKS. Emitted only when configured, and additive: verifiers that do not
-    // check `iss` ignore it, so this is safe to ship ahead of them.
-    const issuer = this.config.get<string>('JWT_ISSUER');
+    // An account in its 30 days of deletion (SETTINGS-08) holds no session,
+    // whichever route asks for one. The one way back is a sign-in that cancels
+    // the deletion with the Hub first: it restores the account, and only then
+    // asks for its session, so by then this no longer applies.
+    if (user.status === 'pending_deletion') {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'ACCOUNT_DELETION_PENDING',
+        message:
+          'This account is scheduled for deletion. Sign in with your password to keep it.',
+      });
+    }
 
-    const accessToken = await this.jwt.signAsync(this.buildAccessPayload(user), {
-      algorithm: 'RS256',
-      expiresIn: this.config.getOrThrow<string>('JWT_EXPIRES_IN') as ExpiresIn,
-      keyid: this.jwks.kid,
-      ...(issuer ? { issuer } : {}),
-    });
+    const accessToken = await this.signAccessToken(user);
 
     // The jti is the record's lookup key: it is signed into the token and
     // stored on the row, so a refresh or a sign-out finds the one row and

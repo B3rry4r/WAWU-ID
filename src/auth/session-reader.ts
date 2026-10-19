@@ -37,7 +37,7 @@ export class SessionReader {
     if (!match) throw SIGN_IN_AGAIN();
 
     const issuer = this.config.get<string>('JWT_ISSUER');
-    let payload: { sub?: unknown; type?: unknown };
+    let payload: { sub?: unknown; type?: unknown; iat?: unknown };
     try {
       payload = await this.jwt.verifyAsync(match[1], {
         algorithms: ['RS256'],
@@ -55,6 +55,13 @@ export class SessionReader {
       .catch(() => null);
     if (!user || user.deletedAt || user.status !== 'active') {
       throw SIGN_IN_AGAIN();
+    }
+    // A token issued before the account's sessions were revoked (SETTINGS-08:
+    // the moment its 30 days of deletion began) stays dead even after a sign-in
+    // cancelled the deletion and the account is active again.
+    if (user.sessionsRevokedAt) {
+      const issuedAt = typeof payload.iat === 'number' ? payload.iat * 1000 : 0;
+      if (issuedAt < user.sessionsRevokedAt.getTime()) throw SIGN_IN_AGAIN();
     }
     return user;
   }

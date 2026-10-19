@@ -20,6 +20,7 @@ import {
   type VerificationTickName,
 } from '../common/verification.util';
 import { MailSendError, MailService } from '../mail/mail.service';
+import { parseDataExportLink } from '../mail/data-export-link';
 import { parseMoneyCheckReport } from '../mail/money-check-report';
 import { OtpService } from '../otp/otp.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -30,6 +31,9 @@ import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { erasedKeys, lockErasure, otherHolders } from './erased-identifiers';
 import { DELETED_PHONE_PREFIX, phoneForClients } from './released-phone';
+import { DeletionWindowService } from './deletion-window.service';
+import { isDeletedOrDeleting } from './deletion-window';
+import { HubAccountClient } from './hub-account.client';
 import { deleteAccountsMatching } from './account-removal';
 import { holdsUnprovenPhone, removePendingSignup } from './unproven-phone';
 import { TokenPair, TokensService } from './tokens.service';
@@ -115,9 +119,39 @@ export class AuthService {
     email: string | null;
     emailVerified: boolean;
     phoneVerifiedAt: Date | null;
+    status: string;
+    deletedAt: Date | null;
+  }): string | null {
+    // Nothing a service sends on its own goes to an account in its 30 days of
+    // deletion or already deleted (SETTINGS-08). The type asks for both fields
+    // on purpose: a caller that does not select them does not compile.
+    if (isDeletedOrDeleting(user)) return null;
+    return this.ownProvenEmail(user);
+  }
+
+  /**
+   * The same rule without the deletion check: for the one mail a person asks
+   * for themselves while their account is closed (a password reset link).
+   */
+  private ownProvenEmail(user: {
+    email: string | null;
+    emailVerified: boolean;
+    phoneVerifiedAt: Date | null;
   }): string | null {
     if (!user.email) return null;
     return user.emailVerified || !user.phoneVerifiedAt ? user.email : null;
+  }
+
+  private deletionWindowService?: DeletionWindowService;
+
+  /** The 30 days of a deletion (SETTINGS-08): built on first use from this service's own parts. */
+  private deletionWindow(): DeletionWindowService {
+    this.deletionWindowService ??= new DeletionWindowService(
+      this.prisma,
+      this.tokens,
+      new HubAccountClient(this.config),
+    );
+    return this.deletionWindowService;
   }
 
   private toUserResponse(
@@ -346,9 +380,17 @@ export class AuthService {
 
     this.refuseIfPending(user);
 
+    // An account in its 30 days of deletion: a right password cancels it, but
+    // only once the Hub has (R-17, SETTINGS-08). Past the 30 days, or once the
+    // Hub's purge has started, this refuses and nothing is restored.
+    let signedIn: WawuUser = user;
+    if (user.status === 'pending_deletion') {
+      signedIn = (await this.deletionWindow().cancelOnSignIn(user.id)).user;
+    }
+
     // Fire-and-forget login-alert email. CTA points at the account-security
     // page (env-overridable, defaults to the reset-password route on APP_URL).
-    const alertTo = this.provenEmail(user);
+    const alertTo = this.provenEmail(signedIn);
     if (alertTo) {
       const appUrl = (
         this.config.get<string>('FRONTEND_URL') ??
@@ -359,11 +401,11 @@ export class AuthService {
       // URL, so the live route is /forgot-password (not /auth/forgot-password).
       const secureUrl =
         this.config.get<string>('SECURITY_URL') ?? `${appUrl}/forgot-password`;
-      void this.mail.sendLoginAlert(alertTo, secureUrl, user.firstName);
+      void this.mail.sendLoginAlert(alertTo, secureUrl, signedIn.firstName);
     }
 
-    const pair = await this.tokens.issueTokens(user);
-    return { ...pair, user: this.toUserResponse(user) };
+    const pair = await this.tokens.issueTokens(signedIn);
+    return { ...pair, user: this.toUserResponse(signedIn) };
   }
 
   /** A session for a user whose identity a route has just proven. */
@@ -815,6 +857,13 @@ export class AuthService {
           phone: locked[0].phone,
           phoneVerifiedFor: locked[0].phone_verified_for,
         };
+        // Already anonymised (the Hub asks again after a lost answer, or two of
+        // its workers ask together and the other one got the lock first): the
+        // scrub has run, and it does not run twice. Nothing changes, `deletedAt`
+        // keeps the moment of the first one, and the answer is the same (SETTINGS-08).
+        if (before.phone.startsWith(DELETED_PHONE_PREFIX)) {
+          return { id: userId, status: 'banned' };
+        }
         await tx.phoneChangeRequest.deleteMany({ where: { userId } });
         // Only what is the account's OWN goes (JOIN-03 round 5, D11): the
         // number it holds or proved and the address it holds, and only while
@@ -878,6 +927,14 @@ export class AuthService {
         await tx.passwordResetToken.deleteMany({ where: { userId } });
         return { id: userId, status: 'banned' };
       });
+      // The 30 days are over: nothing is left to cancel. Housekeeping after the
+      // commit, best effort: nothing reads the window of an anonymised account
+      // (a mark and a sign-in both look at the account first).
+      try {
+        await this.prisma.deletionWindow.deleteMany({ where: { userId } });
+      } catch {
+        // a row that stays is harmless
+      }
       return { id: scrubbed.id, status: scrubbed.status, deleted: false };
     }
 
@@ -892,38 +949,21 @@ export class AuthService {
 
   /**
    * Internal (X-Service-Key gated) start of the cross-ecosystem deletion flow.
-   * Marks the account `pending_deletion`, stamps `deletedAt`, and revokes ALL
+   * Marks the account `pending_deletion`, stamps `deletedAt`, revokes ALL
    * active sessions + password-reset tokens (same revocation as the anonymize
-   * path). The hub finalizes the deletion ~48h later via deleteUser(anonymize).
+   * path) and records the end of the 30 days (R-17, SETTINGS-08). A sign-in
+   * before that end cancels the deletion with the Hub; the Hub finalizes it
+   * after the end via deleteUser(anonymize).
    *
-   * Idempotent: re-marking an account that is already pending_deletion just
-   * refreshes deletedAt and re-revokes tokens — it never throws on repeat calls.
+   * Idempotent: re-marking an account that is already pending_deletion keeps
+   * its dates and re-revokes tokens; it never throws on repeat calls.
+   * `purgeAfter` is the Hub's own date when it sends one.
    */
   async markPendingDeletion(
     userId: string,
+    purgeAfter?: Date | null,
   ): Promise<{ id: string; status: string }> {
-    const user = await this.prisma.wawuUser.findUnique({
-      where: { id: userId },
-    });
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.wawuUser.update({
-        where: { id: userId },
-        data: {
-          status: 'pending_deletion',
-          deletedAt: new Date(),
-        },
-      });
-      // Same revocation the anonymize path uses: drop every session + reset token.
-      await tx.refreshToken.deleteMany({ where: { userId } });
-      await tx.passwordResetToken.deleteMany({ where: { userId } });
-      return u;
-    });
-
-    return { id: updated.id, status: updated.status };
+    return this.deletionWindow().mark(userId, purgeAfter ?? null);
   }
 
   // ── OTP (phone) ───────────────────────────────────────────────────────────────
@@ -965,6 +1005,12 @@ export class AuthService {
           status: 'active',
         },
       });
+    }
+
+    // A good code for an account in its 30 days of deletion cancels it, as a
+    // right password does (R-17, SETTINGS-08).
+    if (user.status === 'pending_deletion') {
+      user = (await this.deletionWindow().cancelOnSignIn(user.id)).user;
     }
 
     const pair = await this.tokens.issueTokens(user);
@@ -1092,7 +1138,7 @@ export class AuthService {
     if (user) {
       if (method === 'email' && user.email) {
         // A mobile sign-up's email was never proven: no mail goes to it.
-        if (!this.provenEmail(user)) {
+        if (!this.ownProvenEmail(user)) {
           return sent;
         }
         // Web hub: email a one-time reset link via Resend.
@@ -1171,12 +1217,18 @@ export class AuthService {
     }
     this.refuseIfPending(user);
 
-    const updated = await this.prisma.wawuUser.update({
+    let updated = await this.prisma.wawuUser.update({
       where: { id: user.id },
       data: { passwordHash: await argon2.hash(newPassword) },
     });
     // Invalidate every other active session for this user.
     await this.prisma.refreshToken.deleteMany({ where: { userId: user.id } });
+
+    // The code proved the person: in their 30 days of deletion that cancels it,
+    // as a sign-in does (R-17, SETTINGS-08).
+    if (updated.status === 'pending_deletion') {
+      updated = (await this.deletionWindow().cancelOnSignIn(updated.id)).user;
+    }
 
     const pair = await this.tokens.issueTokens(updated);
     return { ...pair, user: this.toUserResponse(updated) };
@@ -1285,6 +1337,8 @@ export class AuthService {
         firstName: true,
         emailVerified: true,
         phoneVerifiedAt: true,
+        status: true,
+        deletedAt: true,
       },
     });
     const warnTo = user ? this.provenEmail(user) : null;
@@ -1321,10 +1375,16 @@ export class AuthService {
     const report = parseMoneyCheckReport(body);
     const user = await this.prisma.wawuUser.findUnique({
       where: { id: userId },
-      select: { email: true, firstName: true, emailVerified: true },
+      select: {
+        email: true,
+        firstName: true,
+        emailVerified: true,
+        status: true,
+        deletedAt: true,
+      },
     });
     if (!user) throw new NotFoundException('User not found');
-    if (!user.email || !user.emailVerified) {
+    if (!user.email || !user.emailVerified || isDeletedOrDeleting(user)) {
       throw new ConflictException(
         'This account has no verified email address to send the report to.',
       );
@@ -1335,6 +1395,60 @@ export class AuthService {
       if (!(err instanceof MailSendError)) throw err;
       throw new ServiceUnavailableException(
         'The report could not be handed to the mailer. Try again.',
+      );
+    }
+    return { emailed: true };
+  }
+
+  /**
+   * The link to a person's data export, mailed to the one person the Hub
+   * names (task FIX-53, the Hub's SETTINGS-04, BACKEND_GAPS G-131). Same
+   * split as the other internal mails: the Hub names the user and the link,
+   * this service owns the address and the wording, and a body that carries
+   * anything but the export link and its deadline is refused
+   * (`parseDataExportLink`).
+   *
+   * A mail that was not sent is never a 200: the Hub marks the request `sent`
+   * on a 200 and the person gets nothing otherwise, so: 400 for a body it
+   * will not take, 404 for no such account, 409 for an account with no proven
+   * email address (the account's own address is the only one ever mailed),
+   * 503 when the mailer could not hand the mail on. The Hub keeps the request
+   * `pending` on any of them and asks again.
+   */
+  async sendDataExportLink(
+    userId: string,
+    body: unknown,
+  ): Promise<{ emailed: true }> {
+    const link = parseDataExportLink(body);
+    const user = await this.prisma.wawuUser.findUnique({
+      where: { id: userId },
+      select: {
+        email: true,
+        firstName: true,
+        emailVerified: true,
+        phoneVerifiedAt: true,
+        status: true,
+        deletedAt: true,
+      },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    const exportTo = this.provenEmail(user);
+    if (!exportTo) {
+      throw new ConflictException(
+        'This account has no verified email address to send the export to.',
+      );
+    }
+    try {
+      await this.mail.sendDataExportLink(
+        exportTo,
+        user.firstName,
+        link.downloadUrl,
+        link.expiresAt,
+      );
+    } catch (err) {
+      if (!(err instanceof MailSendError)) throw err;
+      throw new ServiceUnavailableException(
+        'The export link could not be handed to the mailer. Try again.',
       );
     }
     return { emailed: true };
@@ -1352,6 +1466,8 @@ export class AuthService {
         firstName: true,
         emailVerified: true,
         phoneVerifiedAt: true,
+        status: true,
+        deletedAt: true,
       },
     });
     const inviteTo = user ? this.provenEmail(user) : null;

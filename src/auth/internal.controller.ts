@@ -26,6 +26,7 @@ import { UpdateVerificationDto } from './dto/update-verification.dto';
 import { LookupUsersDto } from './dto/lookup-users.dto';
 import { DittoInviteDto } from './dto/ditto-invite.dto';
 import { UnpaidWarningDto } from './dto/unpaid-warning.dto';
+import { MarkDeletionDto } from './dto/mark-deletion.dto';
 
 /**
  * Service-to-service endpoints. Guarded by the shared X-Service-Key header
@@ -270,19 +271,29 @@ export class InternalController {
 
   /**
    * POST /internal/users/:userId/mark-deletion
-   * Starts the cross-ecosystem account-deletion grace period: marks the account
-   * `pending_deletion`, stamps `deletedAt`, and revokes all sessions + reset
-   * tokens. Same X-Service-Key guard as the other internal routes. Idempotent.
-   * The hub finalizes ~48h later via DELETE /internal/users/:userId?mode=anonymize.
+   * Body (optional): { purgeAfter } the Hub's own end date of the 30 days (ISO).
+   *
+   * Starts the cross-ecosystem account-deletion grace period (R-17): marks the
+   * account `pending_deletion`, stamps `deletedAt`, revokes all sessions + reset
+   * tokens and records when the 30 days end. Same X-Service-Key guard as the
+   * other internal routes. Idempotent: asked again, the dates do not move. A
+   * sign-in before the end cancels it with the Hub; the Hub finalizes after the
+   * end via DELETE /internal/users/:userId?mode=anonymize.
    */
   @Post('users/:userId/mark-deletion')
   @HttpCode(HttpStatus.OK)
   async markDeletion(
     @Param('userId') userId: string,
+    @Body() dto: MarkDeletionDto,
     @Headers('x-service-key') serviceKey?: string,
   ) {
     this.assertServiceKey(serviceKey);
-    return { data: await this.auth.markPendingDeletion(userId) };
+    return {
+      data: await this.auth.markPendingDeletion(
+        userId,
+        dto?.purgeAfter ? new Date(dto.purgeAfter) : null,
+      ),
+    };
   }
 
   /**
@@ -303,7 +314,11 @@ export class InternalController {
     @Body() dto: DittoInviteDto,
   ) {
     this.assertServiceKey(serviceKey);
-    return this.auth.sendDittoInvite(userId, dto.signupUrl, dto.discountPercent);
+    return this.auth.sendDittoInvite(
+      userId,
+      dto.signupUrl,
+      dto.discountPercent,
+    );
   }
 
   /**
@@ -322,7 +337,13 @@ export class InternalController {
     @Body() dto: UnpaidWarningDto,
   ) {
     this.assertServiceKey(serviceKey);
-    return { data: await this.auth.sendUnpaidDeletionWarning(userId, dto.hoursLeft, dto.planUrl) };
+    return {
+      data: await this.auth.sendUnpaidDeletionWarning(
+        userId,
+        dto.hoursLeft,
+        dto.planUrl,
+      ),
+    };
   }
 
   /**
@@ -348,6 +369,31 @@ export class InternalController {
   ) {
     this.assertServiceKey(serviceKey);
     return { data: await this.auth.sendMoneyCheckReport(userId, body) };
+  }
+
+  /**
+   * POST /internal/users/:userId/data-export
+   * Body: { downloadUrl, expiresAt }
+   *
+   * Mails the person the link to download a copy of their data (the Hub's
+   * SETTINGS-04, BACKEND_GAPS G-131), to that account's own proven email
+   * address. Not a mail relay: the Hub names the user and the link, this
+   * service owns the address, the subject and the wording, and a body that
+   * carries anything but the Hub's export link and its deadline is refused
+   * with a 400. Answers 200 `{ data: { emailed: true } }` only after the mail
+   * was handed to the mailer; 404 when there is no such account, 409 when it
+   * has no proven address, 503 when the mailer could not take it, so the Hub
+   * keeps the request and asks again.
+   */
+  @Post('users/:userId/data-export')
+  @HttpCode(HttpStatus.OK)
+  async dataExport(
+    @Headers('x-service-key') serviceKey: string,
+    @Param('userId') userId: string,
+    @Body() body: unknown,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return { data: await this.auth.sendDataExportLink(userId, body) };
   }
 
   private assertServiceKey(provided?: string): void {
