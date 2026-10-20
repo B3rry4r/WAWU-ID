@@ -444,6 +444,24 @@ dbCases('SETTINGS-08 against a real database and a fake Hub', () => {
     expect(hub.calls).toHaveLength(1);
   });
 
+  it('SWEEP-AUTH SETTINGS-08 L1: a sign-in that finds the account already restored waits for the revocation stamp, so its token is live', async () => {
+    // The state the second of two sign-ins meets: the first has cancelled, the
+    // account is active, and the stamp is up to a second ahead of now.
+    const u = await makeUser();
+    const stamp = ceilToSecond(new Date(Date.now() + 700));
+    await prisma.wawuUser.update({
+      where: { id: u.id },
+      data: { sessionsRevokedAt: stamp },
+    });
+    const outcome = await (auth as any).deletionWindow().cancelOnSignIn(u.id);
+    expect(outcome.cancelled).toBe(false);
+    expect(Date.now()).toBeGreaterThanOrEqual(stamp.getTime());
+    const pair = await tokens.issueTokens(outcome.user);
+    const req = { headers: { authorization: `Bearer ${pair.accessToken}` } };
+    expect((await reader.accountFor(req as never)).id).toBe(u.id);
+    expect(hub.calls).toHaveLength(0);
+  });
+
   it('day 30 runs once even with two workers asking together', async () => {
     const u = await makeUser({ occupation: 'tailor' });
     await auth.markPendingDeletion(u.id);
