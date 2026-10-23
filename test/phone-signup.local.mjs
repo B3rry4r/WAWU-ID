@@ -445,7 +445,7 @@ try {
   ok(
     'and still gets its login alert',
     mailTo(webEmail).some((l) =>
-      /subject="(?!Your WAWUAfrica verification)/.test(l),
+      /subject="(?!Your Who Made This? verification)/.test(l),
     ),
   );
   const web = (

@@ -222,7 +222,7 @@ describe('POST /internal/users/:userId/pin-reset-code', () => {
       expect(res.body).toEqual({ data: { sent: true } });
       expect(sent).toHaveLength(1);
       expect(sent[0].to).toBe('owner-c9@example.test');
-      expect(sent[0].subject).toBe('Your WAWUAfrica verification code');
+      expect(sent[0].subject).toBe('Your Who Made This? verification code');
     });
 
     it('carries the code, says it is for the transaction PIN, and says how long it lives', async () => {
@@ -255,7 +255,7 @@ describe('POST /internal/users/:userId/pin-reset-code', () => {
         OWNER,
         hubBody({ subject: 'Hello', link: 'https://x.test' }),
       ).expect(200);
-      expect(sent[0].subject).toBe('Your WAWUAfrica verification code');
+      expect(sent[0].subject).toBe('Your Who Made This? verification code');
       expect(sent[0].html).not.toContain('x.test');
     });
   });

@@ -195,7 +195,9 @@ describe('POST /internal/users/:userId/data-export', () => {
       expect(res.body).toEqual({ data: { emailed: true } });
       expect(sent).toHaveLength(1);
       expect(sent[0].to).toBe('owner@example.test');
-      expect(sent[0].subject).toBe('Your WAWUAfrica data is ready to download');
+      expect(sent[0].subject).toBe(
+        'Your Who Made This? data is ready to download',
+      );
     });
 
     it('carries the link on the button, the deadline in Lagos time, and escapes the name', async () => {
