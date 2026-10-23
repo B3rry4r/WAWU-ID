@@ -2,7 +2,7 @@
  * Phone numbers as people type them, and the one form the sign-up path stores.
  *
  * A Nigerian number is written `0803 123 4412`, `+234 803 123 4412`,
- * `2348031234412` or `002348031234412`, and all of them are the same phone.
+ * `2348031234412`, `002348031234412` or `8031234412`, and all of them are the same phone.
  * Sign-up stores `+2348031234412` so the same person cannot open two accounts
  * by writing their number two ways, and so the SMS provider (which wants a
  * country code) is always given one.
@@ -28,7 +28,10 @@ export function normalisePhone(input: string): string | null {
     digits = digits.slice(1);
   } else if (digits.startsWith('+')) {
     return INTERNATIONAL.test(digits) ? digits : null;
-  } else {
+  } else if (!NG_NATIONAL.test(digits)) {
+    // Ten digits with no 0 and no country code (8031234567): the number as
+    // people write it when they leave the 0 off. Anything else with no `+`
+    // is not a usable number.
     return null;
   }
 
