@@ -371,7 +371,7 @@ export class MailService {
 
   // ── boss templates ──────────────────────────────────────────────────────────
 
-  /** [WELCOME] You are In. Welcome to WAWUAfrica */
+  /** [WELCOME] You are In. Welcome to Who Made This? */
   /**
    * The Ditto Music distribution invite, sent when a Pro Max creator OPTS IN.
    *
