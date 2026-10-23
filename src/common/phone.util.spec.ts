@@ -16,6 +16,31 @@ describe('normalisePhone', () => {
     expect(normalisePhone(typed)).toBe(stored);
   });
 
+  // FIX-99 (L2): the 0 left off. Ten digits starting 7, 8 or 9.
+  it.each([
+    ['8031234567', '+2348031234567'],
+    ['803 123 4567', '+2348031234567'],
+    ['(803) 123-4567', '+2348031234567'],
+    ['7012345678', '+2347012345678'],
+    ['9012345678', '+2349012345678'],
+  ])('writes %s, typed without the leading 0, as %s', (typed, stored) => {
+    expect(normalisePhone(typed)).toBe(stored);
+  });
+
+  it('writes the ten-digit and the 0 spellings of one number the same way', () => {
+    expect(normalisePhone('8031234567')).toBe(normalisePhone('08031234567'));
+  });
+
+  it.each([
+    '803123456',
+    '80312345678',
+    '6031234567',
+    '1031234567',
+    '0000000000',
+  ])('still refuses %p, which is not a ten-digit mobile number', (typed) => {
+    expect(normalisePhone(typed)).toBeNull();
+  });
+
   it('passes an international number through as typed', () => {
     expect(normalisePhone('+14155550123')).toBe('+14155550123');
   });
