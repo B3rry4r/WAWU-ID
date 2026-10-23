@@ -130,7 +130,7 @@ export class MailService {
   constructor(private readonly config: ConfigService) {
     this.from =
       this.config.get<string>('MAIL_FROM') ??
-      'WAWUAfrica <noreply@wawuafrica.com>';
+      'Who Made This? <noreply@wawuafrica.com>';
     this.headerUrl =
       this.config.get<string>('EMAIL_HEADER_URL') ?? DEFAULT_HEADER_URL;
     const apiKey = this.config.get<string>('RESEND_API_KEY');
@@ -327,7 +327,7 @@ export class MailService {
 <meta name="x-apple-disable-message-reformatting" />
 <meta name="color-scheme" content="dark" />
 <meta name="supported-color-schemes" content="dark" />
-<title>WAWUAfrica</title>
+<title>Who Made This?</title>
 </head>
 <body style="margin:0;padding:0;background-color:${MAIL_COLORS.page};-webkit-text-size-adjust:100%;">
 <span style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:${MAIL_COLORS.page};">${this.escape(opts.preheader)}</span>
@@ -337,7 +337,7 @@ export class MailService {
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;">
         <tr>
           <td style="padding:0;line-height:0;">
-            <img src="${this.headerUrl}" alt="WAWU" width="600" style="display:block;width:100%;max-width:600px;height:auto;margin:0 auto;border:0;border-radius:14px 14px 0 0;" />
+            <img src="${this.headerUrl}" alt="Who Made This?" width="600" style="display:block;width:100%;max-width:600px;height:auto;margin:0 auto;border:0;border-radius:14px 14px 0 0;" />
           </td>
         </tr>
         <tr>
@@ -351,10 +351,10 @@ export class MailService {
         </tr>
         <tr>
           <td style="padding:26px 40px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:${MAIL_COLORS.textMuted};text-align:center;">
-            <p style="margin:0;font-weight:600;color:${MAIL_COLORS.textPrimary};">The WAWUAfrica Team</p>
+            <p style="margin:0;font-weight:600;color:${MAIL_COLORS.textPrimary};">The Who Made This? Team</p>
             <p style="margin:6px 0 0;">We Build Ecosystems. Not Programs.</p>
             <p style="margin:2px 0 0;">Where Africa Connects, Shares, Learns and Grows.</p>
-            <p style="margin:16px 0 0;color:${MAIL_COLORS.textDisabled};">&copy; ${year} WAWUAfrica. All rights reserved.</p>
+            <p style="margin:16px 0 0;color:${MAIL_COLORS.textDisabled};">&copy; ${year} Who Made This? All rights reserved.</p>
           </td>
         </tr>
       </table>
@@ -371,7 +371,7 @@ export class MailService {
 
   // ── boss templates ──────────────────────────────────────────────────────────
 
-  /** [WELCOME] You are In. Welcome to WAWUAfrica */
+  /** [WELCOME] You are In. Welcome to Who Made This? */
   /**
    * The Ditto Music distribution invite, sent when a Pro Max creator OPTS IN.
    *
@@ -396,13 +396,13 @@ export class MailService {
         'You have opted in to music distribution through Ditto Music, included with your Pro Max plan.',
       ),
       this.p(
-        `Use the link below to create your Ditto account. Your WAWUAfrica plan takes ${discountPercent}% off Ditto's price — the discount is applied through this link, so use it rather than signing up directly.`,
+        `Use the link below to create your Ditto account. Your Who Made This? plan takes ${discountPercent}% off Ditto's price. The discount is applied through this link, so use it rather than signing up directly.`,
       ),
       this.p(
         'From there you can release unlimited music as one artist to 150+ platforms, keep your royalty splits automatic, and see your fan analytics.',
       ),
       this.p(
-        'This link stays in your subscription settings on WAWUAfrica too, so you do not need to keep this email.',
+        'This link stays in your subscription settings on Who Made This? too, so you do not need to keep this email.',
       ),
     ].join('');
 
@@ -434,7 +434,7 @@ export class MailService {
   ): Promise<void> {
     const body = [
       this.p(
-        `Your WAWUAfrica creator account has not been activated with a plan, and it is due to be removed in about ${hoursLeft} hours.`,
+        `Your Who Made This? creator account has not been activated with a plan, and it is due to be removed in about ${hoursLeft} hours.`,
       ),
       this.p(
         'Picking a tier keeps the account and unlocks uploading straight away. If you do nothing, the account and the details you entered are deleted, and you would need to sign up again from scratch.',
@@ -446,7 +446,7 @@ export class MailService {
 
     await this.send(
       email,
-      `Your WAWUAfrica account closes in ${hoursLeft} hours`,
+      `Your Who Made This? account closes in ${hoursLeft} hours`,
       this.layout({
         preheader: `Pick a plan to keep your account. About ${hoursLeft} hours left.`,
         firstName,
@@ -471,7 +471,7 @@ export class MailService {
   ): Promise<void> {
     const deadline = exportDeadlineText(expiresAt);
     const body = [
-      this.p('Your copy of your WAWUAfrica data is ready to download.'),
+      this.p('Your copy of your Who Made This? data is ready to download.'),
       this.p(
         `The link works until ${this.escape(deadline)} (Lagos time). After that you can ask for a new copy in Settings.`,
       ),
@@ -482,7 +482,7 @@ export class MailService {
 
     await this.send(
       email,
-      'Your WAWUAfrica data is ready to download',
+      'Your Who Made This? data is ready to download',
       this.layout({
         preheader: `Your data export is ready. The link works until ${deadline}.`,
         firstName,
@@ -603,7 +603,7 @@ export class MailService {
 
   async sendWelcome(email: string, firstName?: string | null): Promise<void> {
     const body = [
-      this.p('Welcome to WAWUAfrica. We are so glad to have you with us.'),
+      this.p('Welcome to Who Made This? We are so glad to have you with us.'),
       this.p(
         'You are now part of a community of Africans who refuse to believe that opportunity should be limited by geography, background, or circumstance.',
       ),
@@ -624,9 +624,9 @@ export class MailService {
 
     await this.send(
       email,
-      'You are In. Welcome to WAWUAfrica',
+      'You are In. Welcome to Who Made This?',
       this.layout({
-        preheader: 'You are now part of the WAWUAfrica community.',
+        preheader: 'You are now part of the Who Made This? community.',
         firstName,
         bodyHtml: body,
       }),
@@ -668,13 +668,13 @@ export class MailService {
   ): Promise<void> {
     const body = [
       this.p(
-        'For years, WAWUAfrica has been a place to discover opportunities, learn new skills, grow your business, and connect with a powerful ecosystem. But we could only hear you through emails and WhatsApp messages.',
+        'For years, Who Made This? has been a place to discover opportunities, learn new skills, grow your business, and connect with a powerful ecosystem. But we could only hear you through emails and WhatsApp messages.',
       ),
       this.p(
-        'Now we have added something new — a place for your thoughts, your experiences, your opinions, your stories, your voice.',
+        'Now we have added something new: a place for your thoughts, your experiences, your opinions, your stories, your voice.',
       ),
       this.p(
-        'Welcome to the new WAWUAfrica Community: a space where entrepreneurs, students, professionals, farmers, creators, traders, innovators, and everyday Africans like you can connect, learn, debate, laugh, inspire, and be inspired.',
+        'Welcome to the new Who Made This? Community: a space where entrepreneurs, students, professionals, farmers, creators, traders, innovators, and everyday Africans like you can connect, learn, debate, laugh, inspire, and be inspired.',
       ),
       this.p('A few conversations have already started:'),
       '<ul style="margin:0 0 16px;padding-left:20px;font-size:16px;line-height:1.6;color:#111111;">' +
@@ -684,9 +684,9 @@ export class MailService {
         '<li style="margin:0 0 6px;">The Next African Unicorn Might Be in This Community</li>' +
         '<li style="margin:0 0 6px;">Farming Is Having a Glow-Up</li>' +
         '</ul>',
-      this.p('And trust us — the comments are where the real magic happens.'),
+      this.p('And trust us, the comments are where the real magic happens.'),
       this.p(
-        '<strong>Your account is ready.</strong> Setting your password takes under a minute — just tap the button below to set it and step inside.',
+        '<strong>Your account is ready.</strong> Setting your password takes under a minute. Just tap the button below to set it and step inside.',
       ),
     ].join('');
 
@@ -695,7 +695,7 @@ export class MailService {
       'Africa is talking. Come and say something.',
       this.layout({
         preheader:
-          'Set your password and step into the new WAWUAfrica Community.',
+          'Set your password and step into the new Who Made This? Community.',
         firstName,
         bodyHtml: body,
         cta: { label: 'Set My Password', url: activationUrl },
@@ -727,7 +727,7 @@ export class MailService {
       email,
       'It Happens To The Best Of Us',
       this.layout({
-        preheader: 'Reset your WAWUAfrica password.',
+        preheader: 'Reset your Who Made This? password.',
         firstName,
         bodyHtml: body,
         cta: { label: 'Reset Password', url: resetUrl },
@@ -773,7 +773,7 @@ export class MailService {
   ): Promise<void> {
     const body = [
       this.p(
-        'A new login was detected on your WAWUAfrica account. If this was you, you are all set. If not, please secure your account immediately.',
+        'A new login was detected on your Who Made This? account. If this was you, you are all set. If not, please secure your account immediately.',
       ),
       this.p('Better safe than sorry.'),
     ].join('');
@@ -791,7 +791,7 @@ export class MailService {
   }
 
   /**
-   * [VERIFICATION CODE] Your WAWUAfrica verification code
+   * [VERIFICATION CODE] Your Who Made This? verification code
    *
    * Presents a 6-digit OTP prominently. No CTA link — the user types the code
    * back into the app. Used both as the WhatsApp→email OTP fallback and by the
@@ -825,9 +825,9 @@ export class MailService {
 
     await this.send(
       email,
-      'Your WAWUAfrica verification code',
+      'Your Who Made This? verification code',
       this.layout({
-        preheader: `Your WAWUAfrica verification code (expires in ${lives}).`,
+        preheader: `Your Who Made This? verification code (expires in ${lives}).`,
         bodyHtml: body,
       }),
       strict,
@@ -853,7 +853,7 @@ export class MailService {
       email,
       'Good News. You are Officially Part Of The Ecosystem',
       this.layout({
-        preheader: 'Your WAWUAfrica account has been approved.',
+        preheader: 'Your Who Made This? account has been approved.',
         firstName,
         bodyHtml: body,
       }),
