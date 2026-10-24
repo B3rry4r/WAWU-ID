@@ -222,6 +222,9 @@ export class EmailSignupService {
             // else does.
             phone: held ? releasedPhoneFor(id) : phone,
             passwordHash,
+            // The name the person typed at sign-up (SIGNUP-NAMES, R-82); a client that sends none leaves them empty, as before.
+            firstName: dto.firstName?.trim() || null,
+            lastName: dto.lastName?.trim() || null,
             occupation: dto.occupation?.trim() || null,
             accountType: dto.accountType ?? null,
             verificationTier: 'basic',

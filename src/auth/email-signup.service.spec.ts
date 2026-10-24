@@ -170,6 +170,20 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
     );
   });
 
+  it('keeps the first and last name typed at sign-up, trimmed, and leaves both empty for a client that sends none (SIGNUP-NAMES)', async () => {
+    await service.signup(
+      { ...signup, firstName: '  Ada ', lastName: ' Obi  ' },
+      IP,
+    );
+    expect(prisma.users[0]).toMatchObject({
+      firstName: 'Ada',
+      lastName: 'Obi',
+    });
+
+    build();
+    await service.signup(signup, IP);
+    expect(prisma.users[0]).toMatchObject({ firstName: null, lastName: null });
+  });
   it('never writes a code or the secret to a log, not even when the mail fails', async () => {
     const spies = (['log', 'warn', 'error', 'debug', 'verbose'] as const).map(
       (level) => jest.spyOn(Logger.prototype, level).mockImplementation(),

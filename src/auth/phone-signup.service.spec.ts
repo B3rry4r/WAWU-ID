@@ -159,6 +159,20 @@ describe('PhoneSignupService', () => {
     );
   });
 
+  it('keeps the first and last name typed at sign-up, trimmed, and leaves both empty for a client that sends none (SIGNUP-NAMES)', async () => {
+    await service.signup(
+      { ...signup, firstName: '  Ada ', lastName: ' Obi  ' },
+      IP,
+    );
+    expect(prisma.users[0]).toMatchObject({
+      firstName: 'Ada',
+      lastName: 'Obi',
+    });
+
+    build();
+    await service.signup(signup, IP);
+    expect(prisma.users[0]).toMatchObject({ firstName: null, lastName: null });
+  });
   it('gives each sign-up its own secret', async () => {
     const a = await service.signup(signup, IP);
     later(61);
