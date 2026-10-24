@@ -465,6 +465,75 @@ try {
     JSON.stringify(r.json),
   );
 
+  // GEO-01 (R-85): a mailed code texts nothing, so a number from any country signs up
+  r = await post('/auth/signup', {
+    email: `geo.gh.${stamp}@example.test`,
+    phone: '+233 24 555 0101',
+    password,
+  });
+  ok(
+    'GEO-01: a Ghanaian number signs up by mailed code, is answered in E.164 and lives in GH',
+    r.status === 201 &&
+      r.json.data.phone === '+233245550101' &&
+      (
+        await sql(
+          `select country_code from wawu_users where phone = '+233245550101'`,
+        )
+      ).rows[0]?.country_code === 'GH',
+    JSON.stringify(r.json),
+  );
+  r = await post('/auth/signup', {
+    email: `geo.us.${stamp}@example.test`,
+    phone: '+1 415 555 2671',
+    password,
+    countryCode: 'ng',
+  });
+  ok(
+    "GEO-01: the country sent wins over the phone's own",
+    r.status === 201 &&
+      (
+        await sql(
+          `select country_code from wawu_users where phone = '+14155552671'`,
+        )
+      ).rows[0]?.country_code === 'NG',
+    JSON.stringify(r.json),
+  );
+  // GEO-01 round 1: the country the person named reads a national number first
+  for (const [typed, country, stored] of [
+    ['07400123456', 'GB', '+447400123456'],
+    ['7135551234', 'US', '+17135551234'],
+    ['0245550114', 'GH', '+233245550114'],
+    ['08037770105', 'GB', '+2348037770105'],
+  ]) {
+    r = await post('/auth/signup', {
+      email: `geo.r1.${stored.slice(1)}.${stamp}@example.test`,
+      phone: typed,
+      password,
+      countryCode: country,
+    });
+    ok(
+      `GEO-01 r1: ${typed} with ${country} is stored ${stored} and lives in ${country}`,
+      r.status === 201 &&
+        r.json.data.phone === stored &&
+        (
+          await sql(`select country_code from wawu_users where phone = $1`, [
+            stored,
+          ])
+        ).rows[0]?.country_code === country,
+      JSON.stringify(r.json),
+    );
+  }
+  r = await post('/auth/signup', {
+    email: `geo.junk.${stamp}@example.test`,
+    phone: '+233 24 555',
+    password,
+  });
+  ok(
+    'GEO-01: a number that is not valid for its country is refused (PHONE_INVALID)',
+    r.status === 400 && r.json.code === 'PHONE_INVALID',
+    JSON.stringify(r.json),
+  );
+
   ok(
     'no text message was sent in the whole mailed flow (zero Fintava calls)',
     fintavaCalls.length === 0,

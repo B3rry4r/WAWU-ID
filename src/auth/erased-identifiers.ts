@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { createHash } from 'crypto';
-import { normalisePhone, phoneVariants } from '../common/phone.util';
+import { comparablePhone, phoneVariants } from '../common/phone.util';
 import { isStoredPhone } from './released-phone';
 
 /**
@@ -62,7 +62,7 @@ export const SIGNUP_EMAIL_BUDGET = 'signup-email:';
 
 /** A number as a comparable key: the normalised form when it has one, else the trimmed text. */
 const numberKey = (stored: string): string =>
-  normalisePhone(stored) ?? stored.trim();
+  comparablePhone(stored) ?? stored.trim();
 
 /** An address as a comparable key: case and surrounding space do not make a different mailbox. */
 const addressKey = (email: string): string => email.trim().toLowerCase();
@@ -113,7 +113,7 @@ export function erasedKeys(
     if (heldNumbers.has(numberKey(stored))) continue;
     numbers.add(stored);
     numbers.add(stored.trim());
-    const normal = normalisePhone(stored);
+    const normal = comparablePhone(stored);
     if (normal) {
       for (const spelling of phoneVariants(normal)) numbers.add(spelling);
       for (const form of digitForms(normal)) digits.add(form);
@@ -153,7 +153,7 @@ export async function otherHolders(
     if (typeof stored !== 'string' || !isStoredPhone(stored)) continue;
     forms.add(stored);
     forms.add(stored.trim());
-    const normal = normalisePhone(stored);
+    const normal = comparablePhone(stored);
     if (normal)
       for (const spelling of phoneVariants(normal)) forms.add(spelling);
   }

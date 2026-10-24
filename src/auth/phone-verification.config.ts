@@ -48,8 +48,12 @@ export interface PhoneVerificationConfig {
   /** PENDING_SIGNUP_TTL_SECONDS. How long an unproven sign-up can still be confirmed. */
   // PROVISIONAL(AUTH03-PENDING-TTL, owner=owner, why=no document names how long an unfinished sign-up lasts)
   pendingSignupSeconds: number;
-  /** SIGNUP_ALLOWED_PHONE_PREFIX. Only numbers starting with this are texted. */
-  // PROVISIONAL(AUTH03-COUNTRY, owner=owner, why=assumes sign-up is for Nigerian numbers only; international texts are unpriced)
+  /**
+   * SIGNUP_ALLOWED_PHONE_PREFIX. Only numbers starting with this are TEXTED
+   * (`*` texts every country). A number from any country can sign up when the
+   * code is mailed (R-85, GEO-01); this only limits the texted code.
+   */
+  // PROVISIONAL(AUTH03-COUNTRY, owner=owner, why=the SMS provider's international delivery and price are not confirmed, so texting stays Nigerian until SIGNUP_ALLOWED_PHONE_PREFIX=* says otherwise)
   allowedPhonePrefix: string;
   /** SMS_LIMIT_IP_PER_HOUR. Sign-up and resend requests from one client address. */
   // PROVISIONAL(AUTH03-LIMIT-IP, owner=owner, why=no document names a request limit per client address)
@@ -88,7 +92,8 @@ export function phoneVerificationConfig(
       'PENDING_SIGNUP_TTL_SECONDS',
       24 * 3600,
     ),
-    allowedPhonePrefix: prefix?.startsWith('+') ? prefix : '+234',
+    allowedPhonePrefix:
+      prefix === '*' ? '' : prefix?.startsWith('+') ? prefix : '+234',
     ipPerHour: whole(config, 'SMS_LIMIT_IP_PER_HOUR', 30),
     ipPerDay: whole(config, 'SMS_LIMIT_IP_PER_DAY', 100),
     phonePerDay: whole(config, 'SMS_LIMIT_PHONE_PER_DAY', 5),

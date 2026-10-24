@@ -28,6 +28,7 @@ import {
 import { RateLimiter } from './rate-limiter.service';
 import { signupStillThere } from './signup-still-there';
 import { releasedPhoneFor } from './released-phone';
+import { countryForSignup } from './signup-country';
 import {
   applyClashPlan,
   numberHeld,
@@ -126,7 +127,8 @@ export class EmailSignupService {
   // ── sign up ────────────────────────────────────────────────────────────────
 
   async signup(dto: SignupDto, address: string): Promise<EmailSignupStarted> {
-    const phone = this.requirePhone(dto.phone);
+    const phone = this.requirePhone(dto.phone, dto.countryCode);
+    const countryCode = countryForSignup(dto.countryCode, phone);
     const email = dto.email.toLowerCase().trim();
     this.requireTransport();
     await this.gateAddress(address);
@@ -227,6 +229,8 @@ export class EmailSignupService {
             lastName: dto.lastName?.trim() || null,
             occupation: dto.occupation?.trim() || null,
             accountType: dto.accountType ?? null,
+            // The country the person lives in (GEO-01, R-85).
+            countryCode,
             verificationTier: 'basic',
             trustScore: 0,
             status: 'active',
@@ -405,9 +409,7 @@ export class EmailSignupService {
     address: string,
   ): Promise<TokenPair & { user: UserResponse }> {
     const phone = normalisePhone(rawPhone);
-    if (!phone || !phone.startsWith(this.settings.allowedPhonePrefix)) {
-      throw WRONG_CODE();
-    }
+    if (!phone) throw WRONG_CODE();
     const gate = await this.limits.hit(
       'signup-mail-confirm-ip',
       address,
@@ -528,10 +530,7 @@ export class EmailSignupService {
     if (!gate.allowed) throw this.busy(gate.retryAfterSeconds);
 
     const phone = normalisePhone(rawPhone);
-    const pending =
-      phone && phone.startsWith(this.settings.allowedPhonePrefix)
-        ? await this.findByAttempt(phone, attempt)
-        : null;
+    const pending = phone ? await this.findByAttempt(phone, attempt) : null;
     if (!pending) return { step: 'details' };
 
     const now = Date.now();
@@ -557,21 +556,15 @@ export class EmailSignupService {
   // ── internals ──────────────────────────────────────────────────────────────
 
   /**
-   * The number in the one form we keep, or a 400 that depends only on what was
-   * typed. Sign-up stays for Nigerian numbers (R-36): the number is used later
-   * by wallet and identity checks that are Nigerian only.
+   * The number in the one form we keep (E.164), or a 400 that depends only on
+   * what was typed. A mailed code texts nothing, so a valid number from any
+   * country is kept (R-85). The wallet's own Nigerian-only rule (BVN, R-6) is
+   * checked where a wallet is opened, not here.
    */
-  private requirePhone(raw: string): string {
-    const phone = normalisePhone(raw);
+  private requirePhone(raw: string, countryHint?: string | null): string {
+    const phone = normalisePhone(raw, countryHint);
     if (!phone) {
       throw problem(400, 'PHONE_INVALID', 'Enter a valid phone number');
-    }
-    if (!phone.startsWith(this.settings.allowedPhonePrefix)) {
-      throw problem(
-        400,
-        'PHONE_NOT_SUPPORTED',
-        'We can only accept Nigerian phone numbers right now',
-      );
     }
     return phone;
   }

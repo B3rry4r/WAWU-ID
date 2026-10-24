@@ -59,6 +59,14 @@ export class RegisterDto {
   @MinLength(1)
   country!: string;
 
+  // GEO-01 (R-85): the country of residence as ISO 3166-1 alpha-2. Optional;
+  // the web does not send it. Without it the account gets the phone's own
+  // country, else NG. `country` above stays the free text it always was.
+  @IsOptional()
+  @IsString()
+  @MaxLength(8)
+  countryCode?: string;
+
   @IsOptional()
   @IsString()
   state?: string;

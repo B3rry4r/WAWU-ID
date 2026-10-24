@@ -194,8 +194,10 @@ describe('login: unverified email', () => {
 
     it('leaves every account without one answering exactly as before: no accountType key', async () => {
       const out = await attempt({ emailVerified: true, accountType: null });
+      // GEO-01 (R-85) adds `countryCode`; nothing else is added or removed.
       expect(Object.keys(out.user).sort()).toEqual([
         'country',
+        'countryCode',
         'email',
         'fullName',
         'gender',
