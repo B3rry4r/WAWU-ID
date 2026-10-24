@@ -26,11 +26,20 @@ import {
  * (libphonenumber-js, which carries Google's rules for every country), written
  * with its `+` and country code, or `00` and the code. Without a `+` it is read
  * in the country the caller names (`countryHint`, the country the person chose
- * in the phone field), and in no other.
+ * in the phone field) before the Nigerian reading, and in no other country.
  */
 
 /** Nigerian mobile numbers: 10 digits after the country code, starting 7, 8 or 9. */
 const NG_NATIONAL = /^[789]\d{9}$/;
+/** Countries whose numbers are counted as a larger neighbour's (see `phoneCountry`). */
+const PHONE_COUNTRY_OF: Record<string, string> = {
+  AC: 'SH',
+  TA: 'SH',
+  GG: 'GB',
+  JE: 'GB',
+  IM: 'GB',
+};
+
 /** What WAWU ID accepted from a non-Nigerian number before GEO-01: `+` and 8 to 15 digits, as typed. */
 const LEGACY_INTERNATIONAL = /^\+[1-9]\d{7,14}$/;
 
@@ -72,9 +81,16 @@ function valid(text: string, region?: CountryCode): string | null {
 /**
  * Normalised form (E.164), or null when the text is not a usable phone number.
  * This is the strict reading, for a number a person is giving us now: the
- * sign-up, a phone change. `countryHint` is the country (two letters) the
- * person picked in the phone field; it only matters for a number written
- * without a country code and not as a Nigerian number.
+ * sign-up, a phone change.
+ *
+ * A number written with its country code (`+`, or `00`) is read in that
+ * country, whatever else is sent. A number written without one is read in the
+ * country the person named (`countryHint`, two letters) FIRST when it is not
+ * Nigeria, so `07400123456` with `GB` is a UK mobile and `7135551234` with `US`
+ * is Houston; only when it is not a valid number there is the Nigerian reading
+ * tried, so a Nigerian who lives abroad and types `08037770101` still gets
+ * `+2348037770101`. With no country named, or Nigeria named, the Nigerian
+ * reading is the only one and is exactly what it was before GEO-01.
  */
 export function normalisePhone(
   input: string,
@@ -83,23 +99,24 @@ export function normalisePhone(
   const stripped = input.trim().replace(/[\s\-().]/g, '');
   if (!/^\+?\d+$/.test(stripped)) return null;
 
-  const ng = nigerian(stripped);
-  if (typeof ng === 'string') return ng;
-
   // Written with a country code: that code decides. Nigeria's own code means
   // a Nigerian number, and one that fails Nigeria's rule is not a number.
   if (stripped.startsWith('+') || stripped.startsWith('00')) {
     const plus = stripped.startsWith('+') ? stripped : `+${stripped.slice(2)}`;
-    return plus.startsWith('+234') ? null : valid(plus);
+    if (plus.startsWith('+234')) return nigerian(stripped) ?? null;
+    return valid(plus);
   }
 
-  // No country code, and not a Nigerian number: the country the person
-  // picked, or nothing.
-  const hint = toCountryCode(countryHint ?? undefined);
-  if (hint && isSupportedCountry(hint)) {
-    return valid(stripped, hint);
+  // No country code. A country other than Nigeria that the person named reads
+  // the number first.
+  const named = toCountryCode(countryHint ?? undefined);
+  if (named && named !== 'NG' && isSupportedCountry(named)) {
+    const there = valid(stripped, named);
+    if (there) return there;
   }
-  return null;
+
+  const ng = nigerian(stripped);
+  return typeof ng === 'string' ? ng : null;
 }
 
 /**
@@ -140,9 +157,14 @@ export function phoneCountry(e164: string): string | null {
   const parsed = parsePhoneNumberFromString(e164);
   if (!parsed?.isValid()) return null;
   // Ascension and Tristan da Cunha have calling codes of their own but are
-  // part of Saint Helena in the country list.
-  const country =
-    parsed.country === 'AC' || parsed.country === 'TA' ? 'SH' : parsed.country;
+  // part of Saint Helena in the country list. Guernsey, Jersey and the Isle of
+  // Man share +44 with the United Kingdom, their mobile ranges are carried
+  // between all four, and a person with a +44 number lives in the United
+  // Kingdom far more often than in a Crown dependency, so the number's country
+  // is GB; the person can send another. Every other shared calling code is
+  // read by the library's own ranges (Canada from the United States, Kazakhstan
+  // from Russia), which are geographic.
+  const country = PHONE_COUNTRY_OF[parsed.country ?? ''] ?? parsed.country;
   return country && isCountryCode(country) ? country : null;
 }
 

@@ -170,7 +170,10 @@ describe('phoneCountry and resolveCountryCode', () => {
     ['+233241234567', 'GH'],
     ['+14155552671', 'US'],
     ['+12045550123', 'CA'],
-    ['+447911123456', 'GG'],
+    ['+447911123456', 'GB'],
+    ['+441534123456', 'GB'],
+    ['+441481256789', 'GB'],
+    ['+441624500123', 'GB'],
     ['+442071838750', 'GB'],
     ['+24761234', 'SH'],
   ])('puts %s in %s', (phone, country) => {
@@ -196,6 +199,55 @@ describe('phoneCountry and resolveCountryCode', () => {
   it('refuses a country that is not on the list', () => {
     for (const sent of ['XX', 'UK', 'GHA', 'G', 'Ghana', '12', 'AN', 'XK']) {
       expect(resolveCountryCode(sent, '+2348031234412')).toBeNull();
+    }
+  });
+});
+
+// GEO-01 round 1: a country that is named reads the number first.
+describe('normalisePhone, a country named', () => {
+  it.each([
+    ['07400123456', 'GB', '+447400123456'],
+    ['07911 123456', 'GB', '+447911123456'],
+    ['7400123456', 'GB', '+447400123456'],
+    ['7135551234', 'US', '+17135551234'],
+    ['(713) 555-1234', 'US', '+17135551234'],
+    ['0245550114', 'GH', '+233245550114'],
+    ['245550114', 'GH', '+233245550114'],
+    ['024 555 0114', 'gh', '+233245550114'],
+  ])(
+    'reads %s in %s as %s, not as a Nigerian number',
+    (typed, hint, stored) => {
+      expect(normalisePhone(typed, hint)).toBe(stored);
+    },
+  );
+
+  it('falls back to the Nigerian reading only when the number is not valid in the country named', () => {
+    // A Nigerian living abroad who types the number the local way.
+    expect(normalisePhone('08037770101', 'GB')).toBe('+2348037770101');
+    expect(normalisePhone('08037770101', 'GH')).toBe('+2348037770101');
+    expect(normalisePhone('8031234412', 'US')).toBe('+2348031234412');
+    // Valid in the country named, so it is read there: 803 is South Carolina.
+    expect(normalisePhone('8037770101', 'US')).toBe('+18037770101');
+    // Not valid in the country named and not a Nigerian number: refused.
+    expect(normalisePhone('0245550', 'GB')).toBeNull();
+    expect(normalisePhone('024 555 0114', 'GB')).toBeNull();
+  });
+
+  it('reads a number the way it always was when Nigeria is named, or nothing is', () => {
+    for (const hint of [undefined, null, '', 'NG', 'ng', 'ZZ']) {
+      expect(normalisePhone('07400123456', hint)).toBe('+2347400123456');
+      expect(normalisePhone('7135551234', hint)).toBe('+2347135551234');
+      expect(normalisePhone('0803 123 4412', hint)).toBe('+2348031234412');
+      expect(normalisePhone('8031234412', hint)).toBe('+2348031234412');
+    }
+  });
+
+  it('keeps a number written with a country code in its own country, whatever is named', () => {
+    for (const hint of [undefined, 'NG', 'GB', 'US', 'GH']) {
+      expect(normalisePhone('+234 803 123 4412', hint)).toBe('+2348031234412');
+      expect(normalisePhone('002348031234412', hint)).toBe('+2348031234412');
+      expect(normalisePhone('+44 7400 123456', hint)).toBe('+447400123456');
+      expect(normalisePhone('+233 24 555 0114', hint)).toBe('+233245550114');
     }
   });
 });

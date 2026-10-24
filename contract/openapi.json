@@ -1000,7 +1000,7 @@
             "minLength": 2,
             "maxLength": 2,
             "example": "GH",
-            "description": "GEO-01 (R-85): the country the person lives in, ISO 3166-1 alpha-2 (the code the Hub's country list gives). Optional so every client that signs up without one keeps working: without it the account gets the phone's own country, else NG. A code that is not a country is refused (400 COUNTRY_INVALID). Also read as the country of a phone typed without a country code that is not a Nigerian number."
+            "description": "GEO-01 (R-85): the country the person lives in, ISO 3166-1 alpha-2 (the code the Hub's country list gives). Optional so every client that signs up without one keeps working: without it the account gets the phone's own country, else NG. A code that is not a country is refused (400 COUNTRY_INVALID). Also the country a phone typed without a country code is read in first (`07400123456` with `GB` is a UK mobile, `7135551234` with `US` is a US one); a number that is not valid there is read as Nigerian if it can be, so `08037770101` still gives `+2348037770101`. A number written with its `+` or `00` country code is read in that country whatever is sent."
           },
           "password": {
             "type": "string",

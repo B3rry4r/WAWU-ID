@@ -1328,6 +1328,43 @@ try {
     JSON.stringify(r.json),
   );
 
+  // GEO-01 round 1: a Nigerian number typed the local way by someone who names
+  // another country is read there first, and as Nigerian only when it is not valid there
+  r = await post('/auth/signup', {
+    email: `geo.abroad.${stamp}@example.test`,
+    phone: '08037770104',
+    password,
+    countryCode: 'GB',
+  });
+  ok(
+    'GEO-01 r1: 08037770104 with GB (not valid in the UK) is still the Nigerian +2348037770104, living in GB',
+    r.status === 201 &&
+      r.json.data.phone === '+2348037770104' &&
+      (
+        await sql(
+          `select country_code from wawu_users where phone = '+2348037770104'`,
+        )
+      ).rows[0]?.country_code === 'GB',
+    JSON.stringify(r.json),
+  );
+  r = await post('/auth/signup', {
+    email: `geo.uk.${stamp}@example.test`,
+    phone: '07400123456',
+    password,
+    countryCode: 'GB',
+  });
+  ok(
+    'GEO-01 r1: 07400123456 with GB is a UK mobile, so the texted code (Nigeria only) refuses it and nothing is made',
+    r.status === 400 &&
+      r.json.code === 'PHONE_NOT_SUPPORTED' &&
+      (
+        await sql(
+          `select count(*)::int as n from wawu_users where email like 'geo.uk.%' or phone = '+2347400123456'`,
+        )
+      ).rows[0].n === 0,
+    JSON.stringify(r.json),
+  );
+
   // ── 9. F-9: limits on texts ────────────────────────────────────────────────
   const limitIp = '192.0.2.50';
   const outcomes = [];

@@ -16,7 +16,11 @@ BEGIN
   SELECT count(*) INTO kept
   FROM "wawu_users"
   WHERE "country_code" IS NOT NULL
-    AND NOT ("country_code" = 'NG' AND "phone" ~ '^(\+234|234|0)[789][0-9]{9}$');
+    AND NOT (
+      "country_code" = 'NG'
+      AND regexp_replace("phone", '[[:space:]().-]', '', 'g')
+          ~ '^((\+234|00234|234)0?[789][0-9]{9}|0[789][0-9]{9}|[789][0-9]{9})$'
+    );
   IF kept > 0 THEN
     RAISE EXCEPTION 'GEO-01 rollback refused: % account(s) hold a country that is not derived from their phone. Export them, then clear country_code on them, and run this again.', kept;
   END IF;

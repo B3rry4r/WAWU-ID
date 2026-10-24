@@ -498,6 +498,31 @@ try {
       ).rows[0]?.country_code === 'NG',
     JSON.stringify(r.json),
   );
+  // GEO-01 round 1: the country the person named reads a national number first
+  for (const [typed, country, stored] of [
+    ['07400123456', 'GB', '+447400123456'],
+    ['7135551234', 'US', '+17135551234'],
+    ['0245550114', 'GH', '+233245550114'],
+    ['08037770105', 'GB', '+2348037770105'],
+  ]) {
+    r = await post('/auth/signup', {
+      email: `geo.r1.${stored.slice(1)}.${stamp}@example.test`,
+      phone: typed,
+      password,
+      countryCode: country,
+    });
+    ok(
+      `GEO-01 r1: ${typed} with ${country} is stored ${stored} and lives in ${country}`,
+      r.status === 201 &&
+        r.json.data.phone === stored &&
+        (
+          await sql(`select country_code from wawu_users where phone = $1`, [
+            stored,
+          ])
+        ).rows[0]?.country_code === country,
+      JSON.stringify(r.json),
+    );
+  }
   r = await post('/auth/signup', {
     email: `geo.junk.${stamp}@example.test`,
     phone: '+233 24 555',

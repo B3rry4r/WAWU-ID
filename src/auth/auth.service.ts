@@ -260,6 +260,19 @@ export class AuthService {
     dto: RegisterDto,
   ): Promise<TokenPair & { user: UserResponse }> {
     const email = dto.email.toLowerCase().trim();
+    // GEO-01 (R-85). The web does not send a country: it gets the phone's own
+    // (the number as the web typed it, with its dial code when it sent one),
+    // else NG. `country` is stored exactly as it was. A code that is not on the
+    // list is refused first, before the sweep and the duplicate check, so it
+    // answers 400 COUNTRY_INVALID whether or not the phone is free.
+    const countryCode = countryForSignup(
+      dto.countryCode,
+      comparablePhone(dto.phone) ??
+        comparablePhone(
+          `${dto.dialCode ?? ''}${dto.phone.replace(/^0+/, '')}`,
+        ) ??
+        dto.phone,
+    );
 
     // A mobile sign-up nobody confirmed within its 24 hours has released its
     // email and phone (R-36); it must not answer 409 to a web sign-up. Only
@@ -284,17 +297,7 @@ export class AuthService {
         middleName,
         lastName,
         country: dto.country,
-        // GEO-01 (R-85). The web does not send one: it gets the phone's own
-        // country (the number as the web typed it, with its dial code when it
-        // sent one), else NG. `country` above is stored exactly as it was.
-        countryCode: countryForSignup(
-          dto.countryCode,
-          comparablePhone(dto.phone) ??
-            comparablePhone(
-              `${dto.dialCode ?? ''}${dto.phone.replace(/^0+/, '')}`,
-            ) ??
-            dto.phone,
-        ),
+        countryCode,
         state: dto.state ?? null,
         gender: normalizeGender(dto.gender),
         occupation: dto.occupation?.trim() || null,

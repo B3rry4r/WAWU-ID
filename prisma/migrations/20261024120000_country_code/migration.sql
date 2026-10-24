@@ -8,10 +8,12 @@
 -- that new column. No existing column, index, constraint or value is changed,
 -- and an older instance running against this schema never reads or writes it.
 --
--- Backfill: an account whose stored phone is a Nigerian number, in any of the
--- three spellings the service reads as one phone (+234803..., 234803...,
--- 0803...), gets 'NG'. Every other row stays NULL: a phone from another country
--- is not enough to say where the person lives, and a released or erased phone
+-- Backfill: an account whose stored phone READS AS a Nigerian number gets 'NG'.
+-- "Reads as" is what the service's own lookups mean (comparablePhone in
+-- src/common/phone.util.ts): spaces, dashes, dots and brackets are ignored, then
+-- +234803..., 00234803..., 234803..., 0803... (and +2340803...) or the ten digits
+-- 803... alone. Every other row stays NULL: a phone from another country is not
+-- enough to say where the person lives, and a released or erased phone
 -- (`released:<id>`, `deleted:<id>`) says nothing at all.
 --
 -- Deploy order: this migration first, then the new code (`npm run start:prod`
@@ -34,4 +36,5 @@ ALTER TABLE "wawu_users"
 UPDATE "wawu_users"
 SET "country_code" = 'NG'
 WHERE "country_code" IS NULL
-  AND "phone" ~ '^(\+234|234|0)[789][0-9]{9}$';
+  AND regexp_replace("phone", '[[:space:]().-]', '', 'g')
+      ~ '^((\+234|00234|234)0?[789][0-9]{9}|0[789][0-9]{9}|[789][0-9]{9})$';

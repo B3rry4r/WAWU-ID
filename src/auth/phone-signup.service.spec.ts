@@ -285,7 +285,7 @@ describe('PhoneSignupService', () => {
     build({ SIGNUP_ALLOWED_PHONE_PREFIX: '*' });
     await service.signup({ ...signup, phone: '+44 7911 123456' }, IP);
     expect(sms.sent[0].to).toBe('+447911123456');
-    expect(prisma.users[0].countryCode).toBe('GG');
+    expect(prisma.users[0].countryCode).toBe('GB');
     const bad = await failure(
       service.signup(
         { ...signup, email: 'b@example.test', phone: '+4479' },
@@ -293,6 +293,16 @@ describe('PhoneSignupService', () => {
       ),
     );
     expect(bad.code).toBe('PHONE_INVALID');
+  });
+
+  it('reads a number in the country named first when the texted code goes everywhere', async () => {
+    build({ SIGNUP_ALLOWED_PHONE_PREFIX: '*' });
+    await service.signup(
+      { ...signup, phone: '07400123456', countryCode: 'GB' },
+      IP,
+    );
+    expect(sms.sent[0].to).toBe('+447400123456');
+    expect(prisma.users[0].countryCode).toBe('GB');
   });
 
   // ── D-1: a code only works in the sign-up that asked for it ────────────────
