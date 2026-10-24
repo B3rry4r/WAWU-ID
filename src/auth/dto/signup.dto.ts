@@ -37,6 +37,30 @@ export class SignupDto {
   @MaxLength(128)
   password!: string;
 
+  @ApiPropertyOptional({
+    minLength: 1,
+    maxLength: 80,
+    description:
+      'First name (SIGNUP-NAMES, R-82). Optional here so every client that signs up without one keeps working; the app asks for it and sends it.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
+  firstName?: string;
+
+  @ApiPropertyOptional({
+    minLength: 1,
+    maxLength: 80,
+    description:
+      'Last name (SIGNUP-NAMES, R-82). Optional for the same reason as the first name.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
+  lastName?: string;
+
   @ApiPropertyOptional({ maxLength: 120 })
   @IsOptional()
   @IsString()
