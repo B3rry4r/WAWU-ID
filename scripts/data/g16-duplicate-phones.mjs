@@ -52,7 +52,11 @@ let normalisePhone;
 let revertClashes;
 let stillReleased;
 try {
-  ({ normalisePhone } = require('../../dist/common/phone.util.js'));
+  // `comparablePhone` is the lenient reading (GEO-01): it finds the same
+  // duplicate groups `normalisePhone` found before the strict one existed.
+  ({
+    comparablePhone: normalisePhone,
+  } = require('../../dist/common/phone.util.js'));
   ({ revertClashes, stillReleased } = require('../../dist/auth/g16-revert.js'));
 } catch {
   console.error(

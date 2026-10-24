@@ -1,4 +1,4 @@
-import { normalisePhone } from '../common/phone.util';
+import { comparablePhone } from '../common/phone.util';
 import { isStoredPhone } from './released-phone';
 
 /**
@@ -36,6 +36,6 @@ export function phoneIsProven(user: PhoneProofFields): boolean {
     return false;
   }
   if (user.phoneVerifiedFor === user.phone) return true;
-  const proven = normalisePhone(user.phoneVerifiedFor);
-  return proven !== null && proven === normalisePhone(user.phone);
+  const proven = comparablePhone(user.phoneVerifiedFor);
+  return proven !== null && proven === comparablePhone(user.phone);
 }

@@ -42,6 +42,14 @@ export interface AccessTokenPayload {
   lastName: string | null;
   country: string | null;
   /**
+   * GEO-01 (R-85). The country the person lives in, ISO 3166-1 alpha-2 in
+   * capitals ("NG"). `country` above is the older free text and keeps its
+   * meaning; a resource server that groups or filters people by country reads
+   * this. Null for an account that never said and has no Nigerian phone. A
+   * SNAPSHOT, like `verification`.
+   */
+  countryCode: string | null;
+  /**
    * LEGACY. Still claimed so a resource server built against the old ladder
    * keeps verifying tokens through this deploy. Read `verification`.
    */
@@ -109,6 +117,7 @@ export class TokensService {
       middleName: user.middleName,
       lastName: user.lastName,
       country: user.country,
+      countryCode: user.countryCode ?? null,
       verificationTier: user.verificationTier,
       trustScore: user.trustScore,
       verification: deriveVerification(user),

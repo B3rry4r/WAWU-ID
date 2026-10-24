@@ -73,7 +73,8 @@ export class AuthController {
   @ApiResponse({
     status: 400,
     type: ErrorBody,
-    description: 'Validation, PHONE_INVALID, PHONE_NOT_SUPPORTED.',
+    description:
+      'Validation, PHONE_INVALID (not a valid number for its country), COUNTRY_INVALID (`countryCode` is not on the list), PHONE_NOT_SUPPORTED (a texted code only: texts go to the countries SIGNUP_ALLOWED_PHONE_PREFIX names).',
   })
   @ApiResponse({
     status: 409,

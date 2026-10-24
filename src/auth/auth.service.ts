@@ -12,7 +12,7 @@ import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomBytes, randomInt } from 'crypto';
 import { normalizeGender } from '../common/gender.util';
-import { normalisePhone, phoneVariants } from '../common/phone.util';
+import { comparablePhone, phoneVariants } from '../common/phone.util';
 import {
   deriveVerification,
   TICK_COLUMNS,
@@ -32,6 +32,7 @@ import { ACCOUNT_TYPES, type AccountType } from './dto/signup.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { erasedKeys, lockErasure, otherHolders } from './erased-identifiers';
 import { DELETED_PHONE_PREFIX, phoneForClients } from './released-phone';
+import { countryForSignup } from './signup-country';
 import { DeletionWindowService } from './deletion-window.service';
 import { isDeletedOrDeleting } from './deletion-window';
 import { HubAccountClient } from './hub-account.client';
@@ -45,6 +46,12 @@ export interface UserResponse {
   email: string | null;
   phone: string;
   country: string | null;
+  /**
+   * GEO-01 (R-85). The country the person lives in, ISO 3166-1 alpha-2 in
+   * capitals. `country` above is the older free text and keeps its meaning.
+   * Null for an account that never said and has no Nigerian phone.
+   */
+  countryCode: string | null;
   state: string | null;
   gender: string | null;
   occupation: string | null;
@@ -170,6 +177,7 @@ export class AuthService {
       email: user.email,
       phone: phoneForClients(user.phone),
       country: user.country,
+      countryCode: user.countryCode ?? null,
       state: user.state ?? null,
       gender: user.gender ?? null,
       occupation: occupation ?? user.occupation ?? null,
@@ -219,7 +227,7 @@ export class AuthService {
     email: string,
     phone: string,
   ): Promise<void> {
-    const typed = normalisePhone(phone);
+    const typed = comparablePhone(phone);
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
       const expired = await tx.wawuUser.findMany({
@@ -276,6 +284,17 @@ export class AuthService {
         middleName,
         lastName,
         country: dto.country,
+        // GEO-01 (R-85). The web does not send one: it gets the phone's own
+        // country (the number as the web typed it, with its dial code when it
+        // sent one), else NG. `country` above is stored exactly as it was.
+        countryCode: countryForSignup(
+          dto.countryCode,
+          comparablePhone(dto.phone) ??
+            comparablePhone(
+              `${dto.dialCode ?? ''}${dto.phone.replace(/^0+/, '')}`,
+            ) ??
+            dto.phone,
+        ),
         state: dto.state ?? null,
         gender: normalizeGender(dto.gender),
         occupation: dto.occupation?.trim() || null,
@@ -319,7 +338,7 @@ export class AuthService {
       // A number typed the local way (0803...) for an account that mobile
       // sign-up stored as +234.... Only phone-verified accounts are looked up
       // this way, so nothing that answered 404 for a legacy row changes.
-      const normalised = normalisePhone(dto.identifier);
+      const normalised = comparablePhone(dto.identifier);
       if (normalised) {
         user = await this.prisma.wawuUser.findFirst({
           where: {
@@ -500,10 +519,12 @@ export class AuthService {
    * why the consumer app's creator lists were fabricated mock people rather
    * than the real accounts sitting in this table.
    *
-   * Returns ONLY what a public creator card shows: display name and badge
-   * tier. Deliberately not email, phone, gender, or anything else on the row —
-   * a service key is not consent, and the caller does not need them to draw a
-   * card. Unknown ids are omitted rather than returned as nulls, so the caller
+   * Returns ONLY what a public creator card shows: display name, badge tier
+   * and, since GEO-01 (R-85), the country the person lives in (two letters;
+   * the Hub's admin screens group and filter people by it, and a profile
+   * shows it). Deliberately not email, phone, gender, or anything else on the
+   * row — a service key is not consent, and the caller does not need them to
+   * draw a card. Unknown ids are omitted rather than returned as nulls, so the caller
    * distinguishes "no such user" from "user with no name".
    */
   async lookupPublicIdentities(ids: string[]): Promise<
@@ -511,6 +532,8 @@ export class AuthService {
       id: string;
       firstName: string | null;
       lastName: string | null;
+      /** ISO 3166-1 alpha-2, or null when the account has none (GEO-01). */
+      countryCode: string | null;
       /** LEGACY, carried unchanged. Read `verification`. */
       verificationTier: string;
       verification: VerificationState;
@@ -529,6 +552,7 @@ export class AuthService {
         id: true,
         firstName: true,
         lastName: true,
+        countryCode: true,
         verificationTier: true,
         creatorVerifiedAt: true,
         creatorVerifiedUntil: true,
@@ -541,6 +565,7 @@ export class AuthService {
       id: u.id,
       firstName: u.firstName,
       lastName: u.lastName,
+      countryCode: u.countryCode ?? null,
       verificationTier: u.verificationTier,
       verification: deriveVerification(u, now),
     }));
@@ -912,6 +937,7 @@ export class AuthService {
             firstName: null,
             lastName: null,
             country: null,
+            countryCode: null,
             state: null,
             passwordHash: null,
             // Terminal state for a finalized account: `banned` (a finalized,
@@ -1004,6 +1030,11 @@ export class AuthService {
       user = await this.prisma.wawuUser.create({
         data: {
           phone,
+          // GEO-01 (R-85): the phone's own country, else NG.
+          countryCode: countryForSignup(
+            undefined,
+            comparablePhone(phone) ?? phone,
+          ),
           verificationTier: 'basic',
           trustScore: 0,
           status: 'active',

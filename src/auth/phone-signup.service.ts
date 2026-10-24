@@ -24,6 +24,7 @@ import {
 import { RateLimiter } from './rate-limiter.service';
 import { signupStillThere } from './signup-still-there';
 import { releasedPhoneFor } from './released-phone';
+import { countryForSignup } from './signup-country';
 import {
   applyClashPlan,
   numberHeld,
@@ -160,7 +161,8 @@ export class PhoneSignupService {
   // ── sign up ────────────────────────────────────────────────────────────────
 
   async signup(dto: SignupDto, address: string): Promise<SignupStarted> {
-    const phone = this.requirePhone(dto.phone);
+    const phone = this.requirePhone(dto.phone, dto.countryCode);
+    const countryCode = countryForSignup(dto.countryCode, phone);
     this.requireProvider();
     await this.gateAddress(address);
 
@@ -260,6 +262,8 @@ export class PhoneSignupService {
             lastName: dto.lastName?.trim() || null,
             occupation: dto.occupation?.trim() || null,
             accountType: dto.accountType ?? null,
+            // The country the person lives in (GEO-01, R-85).
+            countryCode,
             verificationTier: 'basic',
             trustScore: 0,
             status: 'active',
@@ -573,8 +577,8 @@ export class PhoneSignupService {
   // ── internals ──────────────────────────────────────────────────────────────
 
   /** The number in the one form we text, or a 400 that depends only on what was typed. */
-  private requirePhone(raw: string): string {
-    const phone = normalisePhone(raw);
+  private requirePhone(raw: string, countryHint?: string | null): string {
+    const phone = normalisePhone(raw, countryHint);
     if (!phone) {
       throw problem(400, 'PHONE_INVALID', 'Enter a valid phone number');
     }
