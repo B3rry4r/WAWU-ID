@@ -37,11 +37,30 @@ export class SessionUser {
   @ApiProperty({ type: String, nullable: true })
   email!: string | null;
 
-  @ApiProperty()
+  @ApiProperty({
+    description:
+      'In E.164 (`+2348031234412`, `+233241234567`): the `+`, the country code and the number.',
+  })
   phone!: string;
 
-  @ApiProperty({ type: String, nullable: true })
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description:
+      'The older free text the web types ("Nigeria"). Read `countryCode` to group or filter by country.',
+  })
   country!: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'NG',
+    minLength: 2,
+    maxLength: 2,
+    description:
+      "GEO-01 (R-85): the country the person lives in, ISO 3166-1 alpha-2 in capitals. Set at sign-up (the code sent, else the phone's own country, else NG). Null only for an account made before this field that has no Nigerian phone.",
+  })
+  countryCode!: string | null;
 
   @ApiProperty({ type: String, nullable: true })
   state!: string | null;

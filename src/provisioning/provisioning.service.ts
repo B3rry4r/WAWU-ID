@@ -1,10 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { normalizeGender } from '../common/gender.util';
+import { comparablePhone } from '../common/phone.util';
 import { SafProvisionDto } from './dto/saf-provision.dto';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { deleteAccountsMatching } from '../auth/account-removal';
+import { countryForSignup } from '../auth/signup-country';
 import { TokensService } from '../auth/tokens.service';
 import { PoliciesService } from '../policies/policies.service';
 
@@ -188,6 +190,11 @@ export class ProvisioningService {
               lastName: record.lastName,
               gender: normalizeGender(record.gender),
               country: record.country,
+              // GEO-01 (R-85): the phone's own country, else NG.
+              countryCode: countryForSignup(
+                undefined,
+                comparablePhone(phone) ?? phone,
+              ),
               state: record.state,
               passwordHash: record.passwordHash ?? null,
               onboardingRef: record.onboardingRef ?? null,
@@ -294,6 +301,7 @@ export class ProvisioningService {
         lastName: dto.lastName ?? null,
         gender: normalizeGender(dto.gender),
         country: 'Nigeria',
+        countryCode: 'NG',
         passwordHash: null,
         verificationTier: 'basic',
         trustScore: 0,

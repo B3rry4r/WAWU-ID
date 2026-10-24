@@ -260,6 +260,51 @@ describe('PhoneSignupService', () => {
     expect(sms.sent[0].to).toBe('+233241234567');
   });
 
+  // ── GEO-01 (R-85): a country of residence on every account ─────────────────
+
+  it('stores the country: NG for a Nigerian number, the one sent when it is sent', async () => {
+    await service.signup(signup, IP);
+    expect(prisma.users[0].countryCode).toBe('NG');
+
+    build();
+    await service.signup({ ...signup, countryCode: 'gh' }, IP);
+    expect(prisma.users[0].phone).toBe('+2348031234412');
+    expect(prisma.users[0].countryCode).toBe('GH');
+  });
+
+  it('refuses a country that is not on the list, texting nothing', async () => {
+    const body = await failure(
+      service.signup({ ...signup, countryCode: 'XX' }, IP),
+    );
+    expect(body).toMatchObject({ statusCode: 400, code: 'COUNTRY_INVALID' });
+    expect(sms.sent).toHaveLength(0);
+    expect(prisma.users).toHaveLength(0);
+  });
+
+  it('texts every country when SIGNUP_ALLOWED_PHONE_PREFIX is *, and stores that country', async () => {
+    build({ SIGNUP_ALLOWED_PHONE_PREFIX: '*' });
+    await service.signup({ ...signup, phone: '+44 7911 123456' }, IP);
+    expect(sms.sent[0].to).toBe('+447911123456');
+    expect(prisma.users[0].countryCode).toBe('GB');
+    const bad = await failure(
+      service.signup(
+        { ...signup, email: 'b@example.test', phone: '+4479' },
+        IP,
+      ),
+    );
+    expect(bad.code).toBe('PHONE_INVALID');
+  });
+
+  it('reads a number in the country named first when the texted code goes everywhere', async () => {
+    build({ SIGNUP_ALLOWED_PHONE_PREFIX: '*' });
+    await service.signup(
+      { ...signup, phone: '07400123456', countryCode: 'GB' },
+      IP,
+    );
+    expect(sms.sent[0].to).toBe('+447400123456');
+    expect(prisma.users[0].countryCode).toBe('GB');
+  });
+
   // ── D-1: a code only works in the sign-up that asked for it ────────────────
 
   it('never signs the victim in to the attacker account when a later sign-up replaces theirs', async () => {

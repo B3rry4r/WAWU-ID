@@ -69,6 +69,25 @@ Response 201:
 }
 ```
 
+### Phones from any country, and a country of residence (GEO-01, R-85)
+- Every phone is stored and answered in E.164 (`+2348031234412`, `+233241234567`). A Nigerian
+  number typed `0803...`, `234...`, `+234...` or `8031234412` is the same phone as ever. Any other
+  country: send `+<country code><number>`; it must be a valid number for its country (libphonenumber-js),
+  else 400 `PHONE_INVALID`. `POST /auth/signup` reads a number without a country code in the
+  country named by `countryCode` first (`07400123456` with `GB` is a UK mobile), and as a
+  Nigerian number only when it is not valid there (`08037770101` stays `+2348037770101`); with
+  no country, or `NG`, only the Nigerian reading applies, as it always did.
+- `POST /auth/signup` and `POST /auth/register` take an optional `countryCode` (ISO 3166-1
+  alpha-2, any case). Without it the account gets the phone's own country, else `NG`. A code not
+  on the list is 400 `COUNTRY_INVALID`.
+- The country is answered as `countryCode` (string or null) on the session `user`, as the
+  `countryCode` claim of the access token, and on every row of `POST /internal/users/lookup`.
+  The older free-text `country` ("Nigeria") is unchanged. Accounts that existed before get `NG`
+  when their stored phone is a Nigerian number, and `null` otherwise.
+- A mailed sign-up code (`SIGNUP_VERIFY_CHANNEL=email`) accepts any valid number. A texted code
+  still goes only to numbers under `SIGNUP_ALLOWED_PHONE_PREFIX` (default `+234`; `*` is every
+  country), else 400 `PHONE_NOT_SUPPORTED`.
+
 ### How a mobile sign-up is verified: `SIGNUP_VERIFY_CHANNEL` (AUTH-07)
 One setting decides what the code at A4 proves and how it travels (mobile repo
 DECISIONS.md R-39; owner, 6 Oct 2026: Fintava, and with it SMS, is being removed):

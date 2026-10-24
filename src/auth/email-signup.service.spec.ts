@@ -58,7 +58,12 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
 
   const IP = '203.0.113.7';
   const PHONE = '+2348031234412';
-  const signup = {
+  const signup: {
+    email: string;
+    phone: string;
+    password: string;
+    countryCode?: string;
+  } = {
     email: 'Ada@Example.test',
     phone: '0803 123 4412',
     password: 'a-long-password',
@@ -259,17 +264,100 @@ describe('EmailSignupService (AUTH-07: the sign-up code is mailed)', () => {
     expect(sessionFor).not.toHaveBeenCalled();
   });
 
-  it('refuses a number that is not Nigerian, or not a number, before anything is written or mailed', async () => {
-    const abroad = await failure(
-      service.signup({ ...signup, phone: '+14155552671' }, IP),
-    );
-    expect(abroad.code).toBe('PHONE_NOT_SUPPORTED');
+  // GEO-01 (R-85) replaces "a number that is not Nigerian is refused": a mailed
+  // code texts nothing, so a valid number from any country is kept.
+  it('refuses a number that is not a number, before anything is written or mailed', async () => {
     const junk = await failure(
       service.signup({ ...signup, phone: 'not a phone' }, IP),
     );
     expect(junk.code).toBe('PHONE_INVALID');
+    // Right shape, but no such number in its country.
+    const invented = await failure(
+      service.signup({ ...signup, phone: '+14150000' }, IP),
+    );
+    expect(invented.code).toBe('PHONE_INVALID');
+    const shortNg = await failure(
+      service.signup({ ...signup, phone: '+23480312344' }, IP),
+    );
+    expect(shortNg.code).toBe('PHONE_INVALID');
     expect(prisma.users).toHaveLength(0);
     expect(mail.sent).toHaveLength(0);
+  });
+
+  // ── GEO-01 (R-85): any country's number, and a country of residence ────────
+
+  it('keeps a valid number from another country, in E.164, and answers it as stored', async () => {
+    const { out, attempt, code } = await begin({ phone: '+233 24 123 4567' });
+    expect(out.phone).toBe('+233241234567');
+    expect(prisma.users[0].phone).toBe('+233241234567');
+    expect(prisma.users[0].countryCode).toBe('GH');
+    const session = await confirm(attempt, code, '+233241234567');
+    expect(session.accessToken).toBe('a');
+  });
+
+  it('gives a Nigerian number NG, however it was typed', async () => {
+    for (const typed of ['0803 123 4412', '+2348031234412', '2348031234412']) {
+      build();
+      await begin({ phone: typed });
+      expect(prisma.users[0].phone).toBe(PHONE);
+      expect(prisma.users[0].countryCode).toBe('NG');
+    }
+  });
+
+  it("takes the country the person says they live in, over the phone's own", async () => {
+    await begin({ phone: '+233241234567', countryCode: 'ng' });
+    expect(prisma.users[0].phone).toBe('+233241234567');
+    expect(prisma.users[0].countryCode).toBe('NG');
+  });
+
+  it('reads a number typed without a country code in the country chosen', async () => {
+    await begin({ phone: '024 123 4567', countryCode: 'GH' });
+    expect(prisma.users[0].phone).toBe('+233241234567');
+    expect(prisma.users[0].countryCode).toBe('GH');
+  });
+
+  // GEO-01 round 1: the country the person named reads the number first.
+  it.each([
+    ['07400123456', 'GB', '+447400123456'],
+    ['7135551234', 'US', '+17135551234'],
+    ['0245550114', 'GH', '+233245550114'],
+  ])(
+    'stores %s with %s as %s, never as a Nigerian number',
+    async (phone, countryCode, stored) => {
+      const { out } = await begin({ phone, countryCode });
+      expect(out.phone).toBe(stored);
+      expect(prisma.users[0].phone).toBe(stored);
+      expect(prisma.users[0].countryCode).toBe(countryCode);
+    },
+  );
+
+  it('still stores a Nigerian number typed the local way by someone who lives abroad', async () => {
+    await begin({ phone: '08037770101', countryCode: 'GB' });
+    expect(prisma.users[0].phone).toBe('+2348037770101');
+    expect(prisma.users[0].countryCode).toBe('GB');
+  });
+
+  it('gives a +44 7911 number GB, not Guernsey', async () => {
+    await begin({ phone: '+44 7911 123456' });
+    expect(prisma.users[0].countryCode).toBe('GB');
+  });
+
+  it('refuses a country that is not on the list before anything is written or mailed', async () => {
+    for (const countryCode of ['XX', 'UK', 'GHA', 'Gh1']) {
+      const body = await failure(
+        service.signup({ ...signup, countryCode }, IP),
+      );
+      expect(body).toMatchObject({ statusCode: 400, code: 'COUNTRY_INVALID' });
+    }
+    expect(prisma.users).toHaveLength(0);
+    expect(mail.sent).toHaveLength(0);
+  });
+
+  it('finds the sign-up again by the number it was answered with, abroad too', async () => {
+    const { attempt } = await begin({ phone: '+14155552671' });
+    const resumed = await service.resume('+1 415 555 2671', attempt, IP);
+    expect(resumed).toMatchObject({ step: 'phone', phone: '+14155552671' });
+    expect(prisma.users[0].countryCode).toBe('US');
   });
 
   // ── the code's life ─────────────────────────────────────────────────────────

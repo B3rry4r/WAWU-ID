@@ -55,6 +55,13 @@ model WawuUser {
   gender           String?
   country          String?
   state            String?
+  /// GEO-01 (R-85). The country the person LIVES in, ISO 3166-1 alpha-2 in
+  /// capitals ("NG", "GH"). `country` above is the older free-text field the web
+  /// types ("Nigeria") and stays as it is; this is the one to group and filter
+  /// by. Sign-up sets it (the client's choice, else the phone's own country,
+  /// else NG). NULL for an account whose phone is not a Nigerian one and that
+  /// has not said (existing rows), and for an anonymised account.
+  countryCode      String?          @map("country_code") @db.VarChar(2)
   // Nullable: OTP-only and Category B (onboarding-only) users have no password yet.
   passwordHash     String?          @map("password_hash")
   /// LEGACY, still written by PATCH /internal/users/:userId/verification-tier
