@@ -293,3 +293,116 @@ describe('the welcome at the end of the app sign-up', () => {
     });
   });
 });
+
+describe('the sign-in alert on every kind of sign-in', () => {
+  const sendLoginAlert = jest
+    .fn<Promise<void>, [string, string, string | null]>()
+    .mockResolvedValue(undefined);
+  const sendPasswordChanged = jest.fn().mockResolvedValue(undefined);
+
+  function build(user: Record<string, unknown> | null, mail: object) {
+    const prisma = {
+      wawuUser: {
+        findUnique: jest.fn().mockResolvedValue(user),
+        findFirst: jest.fn().mockResolvedValue(user),
+        create: jest.fn().mockResolvedValue(user),
+        update: jest.fn().mockResolvedValue(user),
+      },
+      passwordResetToken: {
+        findMany: jest.fn(),
+        deleteMany: jest.fn().mockResolvedValue({}),
+      },
+      refreshToken: { deleteMany: jest.fn().mockResolvedValue({}) },
+      $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
+    };
+    const tokens = {
+      issueTokens: jest
+        .fn()
+        .mockResolvedValue({ accessToken: 'a', refreshToken: 'r' }),
+    };
+    const otp = { verify: jest.fn().mockResolvedValue(true) };
+    const auth = new AuthService(
+      prisma as never,
+      tokens as never,
+      otp as never,
+      mail as never,
+      config as never,
+    );
+    return { auth, otp, tokens, prisma };
+  }
+  beforeEach(() => {
+    sendLoginAlert.mockClear();
+    sendPasswordChanged.mockClear();
+  });
+
+  it('is sent once when a phone code signs a person in, to their proven email, with the same link as every alert', async () => {
+    const { auth } = build(account(), { sendLoginAlert });
+    const res = await auth.otpVerify('+2348031234412', '123456');
+    expect(res).toHaveProperty('accessToken');
+    expect(sendLoginAlert).toHaveBeenCalledTimes(1);
+    expect(sendLoginAlert).toHaveBeenCalledWith(
+      'ada@example.test',
+      `${URL_BASE}/forgot-password`,
+      'Ada',
+    );
+  });
+
+  it('is not sent for a wrong code, a phone-only account, or an email never proven', async () => {
+    const wrong = build(account(), { sendLoginAlert });
+    wrong.otp.verify.mockResolvedValue(false);
+    await expect(
+      wrong.auth.otpVerify('+2348031234412', '000000'),
+    ).rejects.toThrow();
+
+    for (const user of [
+      account({ email: null }),
+      account({ emailVerified: false, phoneVerifiedAt: new Date() }),
+    ]) {
+      const { auth } = build(user, { sendLoginAlert });
+      await auth.otpVerify('+2348031234412', '123456');
+    }
+    expect(sendLoginAlert).not.toHaveBeenCalled();
+  });
+
+  it('is sent once for the session a reset by code starts, besides the password-changed mail, and not for a reset by link', async () => {
+    const { auth } = build(account(), { sendLoginAlert, sendPasswordChanged });
+    await auth.resetPassword({
+      identifier: 'ada@example.test',
+      code: '123456',
+      newPassword: 'a-new-password-1',
+    });
+    expect(sendLoginAlert).toHaveBeenCalledTimes(1);
+    expect(sendPasswordChanged).toHaveBeenCalledTimes(1);
+
+    sendLoginAlert.mockClear();
+    const link = build(account(), { sendLoginAlert, sendPasswordChanged });
+    link.prisma.passwordResetToken.findMany.mockResolvedValue([
+      {
+        tokenHash: await argon2.hash('a-reset-token'),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    ]);
+    await link.auth.resetPassword({
+      token: 'a-reset-token',
+      email: 'ada@example.test',
+      password: 'a-new-password-1',
+    });
+    expect(sendLoginAlert).not.toHaveBeenCalled();
+  });
+
+  it('never breaks a sign-in: a mail that throws, rejects or does not exist changes nothing', async () => {
+    for (const mail of [
+      {
+        sendLoginAlert: () => {
+          throw new Error('mailer down');
+        },
+      },
+      { sendLoginAlert: () => Promise.reject(new Error('mailer down')) },
+      {},
+    ]) {
+      const { auth } = build(account(), mail);
+      const res = await auth.otpVerify('+2348031234412', '123456');
+      expect(res).toHaveProperty('accessToken');
+    }
+  });
+});

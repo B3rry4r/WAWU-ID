@@ -163,10 +163,12 @@ export function noticeContent(notice: ParsedNotice): NoticeContent {
       const facts: Fact[] = [{ label: 'Transfer', value: amt }];
       const paragraphs = [`The transfer of ${amt} did not go through.`];
       if (d.returnedMinor > 0) {
+        // The Hub marks the send failed before the reversal lands, so the
+        // money is coming back, not back.
         const back = formatMoney(d.returnedMinor, d.currency);
-        facts.push({ label: 'Returned to your wallet', value: back });
+        facts.push({ label: 'Coming back to your wallet', value: back });
         paragraphs.push(
-          `We returned ${back} to your wallet. You can try the transfer again.`,
+          `Your ${back} is on its way back to your wallet. You can try the transfer again once it is there.`,
         );
       } else {
         paragraphs.push(
@@ -213,6 +215,42 @@ export function noticeContent(notice: ParsedNotice): NoticeContent {
         headline: 'You received a tip',
         paragraphs: [
           `${d.fromName ?? 'Someone'} sent you a tip. You earned ${earned}.`,
+          earningLine(d.paidWhen),
+        ],
+        facts,
+      };
+    }
+    case 'pass_sold': {
+      const d = notice.data;
+      const earned = formatMoney(d.earnedMinor, d.currency);
+      const facts: Fact[] = [{ label: 'Community', value: d.communityName }];
+      if (d.buyerName) facts.push({ label: 'Buyer', value: d.buyerName });
+      facts.push({ label: 'You earned', value: earned }, paidFact(d.paidWhen));
+      return {
+        subject: `You sold a pass to ${clip(d.communityName, 40)}`,
+        preheader: `You earned ${earned}.`,
+        headline: 'You sold a community pass',
+        paragraphs: [
+          `${d.buyerName ?? 'Someone'} bought a pass to ${d.communityName}. You earned ${earned}.`,
+          earningLine(d.paidWhen),
+        ],
+        facts,
+      };
+    }
+    case 'question_earned': {
+      const d = notice.data;
+      const earned = formatMoney(d.earnedMinor, d.currency);
+      const facts: Fact[] = [];
+      if (d.fromName) facts.push({ label: 'From', value: d.fromName });
+      facts.push({ label: 'You earned', value: earned }, paidFact(d.paidWhen));
+      return {
+        subject: `You earned ${earned} from a paid message`,
+        preheader: `You answered a paid message and earned ${earned}.`,
+        headline: 'You earned from a paid message',
+        paragraphs: [
+          d.fromName
+            ? `You answered ${d.fromName}'s message and earned ${earned}.`
+            : `You answered a paid message and earned ${earned}.`,
           earningLine(d.paidWhen),
         ],
         facts,

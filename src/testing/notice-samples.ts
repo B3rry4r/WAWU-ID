@@ -36,6 +36,19 @@ export const NOTICE_SAMPLES: Record<string, Record<string, unknown>> = {
     fromName: 'Amaka N.',
     paidWhen: 'in_3_working_days',
   },
+  pass_sold: {
+    communityName: 'Aba Tailors',
+    buyerName: 'Funke A.',
+    earnedMinor: 425000,
+    currency: 'NGN',
+    paidWhen: 'now',
+  },
+  question_earned: {
+    fromName: 'Seun Adebayo',
+    earnedMinor: 85000,
+    currency: 'NGN',
+    paidWhen: 'in_3_working_days',
+  },
   paid_message_received: {
     fromName: 'Seun Adebayo',
     earnedMinor: 425000,

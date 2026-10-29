@@ -16,15 +16,6 @@ import { formatLagosDateTime } from './notice/notice-format';
 import type { Fact, NoticeContent } from './notice/notice-words';
 
 /**
- * The email header banner.
- *
- * This pointed at `production.wawuafrica.com`, which is the previous PHP
- * platform's domain. That host is being decommissioned, so every email sent
- * after it goes offline would have rendered with a broken header image. It now
- * points at the new web app, which serves /email-header.png with the current
- * trademarked mark. EMAIL_HEADER_URL still overrides it per environment.
- */
-/**
  * Mirrors the web app's tokens.css so an email and the app it belongs to look
  * like the same product. Flattened to solid hex: email clients cannot be
  * trusted with rgba() over a background.
@@ -44,17 +35,17 @@ const MAIL_COLORS = {
 } as const;
 
 /**
- * The banner at the top of every WAWUAfrica email.
- *
- * This pointed at a Railway host that answers 404. The app has been on Vercel
- * behind wawuafrica.com for a long time, so the image in every email we have
- * ever sent was a broken-image box, whatever the client.
+ * The banner at the top of every email: WAWU ID's own picture, drawn from the
+ * app's mark and name, so it reads "Who Made This?" (EMAIL-01 round 1). The
+ * web app's old banner read "WAWUAfrica" and is left where it is.
  *
  * It has to be an absolute, publicly reachable URL: mail clients fetch it from
  * their own network with no session, so anything behind auth, or on a host
- * that no longer exists, silently renders as nothing.
+ * that no longer exists, silently renders as nothing. WAWU ID serves it at
+ * /assets/email-header.png (EmailHeaderController). EMAIL_HEADER_URL still
+ * overrides it per environment.
  */
-const DEFAULT_HEADER_URL = 'https://wawuafrica.com/email-header.png';
+const DEFAULT_HEADER_URL = 'https://id.wawuafrica.com/assets/email-header.png';
 
 /** Options for the shared WAWUAfrica email layout. */
 interface LayoutOptions {

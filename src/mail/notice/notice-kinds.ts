@@ -19,6 +19,8 @@ export const NOTICE_KINDS = [
   'bank_send_failed',
   'sale_made',
   'tip_received',
+  'pass_sold',
+  'question_earned',
   'paid_message_received',
   'refund_processed',
   'purchase_receipt',
@@ -78,6 +80,19 @@ export interface NoticeData {
     earnedMinor: number;
     currency: string;
     fromName: string | null;
+    paidWhen: PaidWhen;
+  };
+  pass_sold: {
+    communityName: string;
+    buyerName: string | null;
+    earnedMinor: number;
+    currency: string;
+    paidWhen: PaidWhen;
+  };
+  question_earned: {
+    fromName: string | null;
+    earnedMinor: number;
+    currency: string;
     paidWhen: PaidWhen;
   };
   paid_message_received: {
@@ -327,6 +342,27 @@ export function parseNotice(kind: string, data: unknown): ParsedNotice {
           earnedMinor: amount(raw, 'earnedMinor'),
           currency: currency(raw),
           fromName: textOrNull(raw, 'fromName', 120),
+          paidWhen: oneOf(raw, 'paidWhen', PAID_WHEN),
+        },
+      };
+    case 'pass_sold':
+      return {
+        kind: 'pass_sold',
+        data: {
+          communityName: text(raw, 'communityName', 120),
+          buyerName: textOrNull(raw, 'buyerName', 120),
+          earnedMinor: amount(raw, 'earnedMinor'),
+          currency: currency(raw),
+          paidWhen: oneOf(raw, 'paidWhen', PAID_WHEN),
+        },
+      };
+    case 'question_earned':
+      return {
+        kind: 'question_earned',
+        data: {
+          fromName: textOrNull(raw, 'fromName', 120),
+          earnedMinor: amount(raw, 'earnedMinor'),
+          currency: currency(raw),
           paidWhen: oneOf(raw, 'paidWhen', PAID_WHEN),
         },
       };

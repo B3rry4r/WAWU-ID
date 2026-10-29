@@ -173,6 +173,32 @@ export class AuthService {
   }
 
   /**
+   * The sign-in alert (EMAIL-01): one mail for each sign-in, whichever way it
+   * happened (a password, a phone code, the session a reset by code starts).
+   * Fire and forget, to a proven address only; the sign-in is made either way.
+   * CTA points at the account-security page (SECURITY_URL, else the
+   * reset-password route).
+   */
+  private alertSignIn(user: {
+    email: string | null;
+    emailVerified: boolean;
+    phoneVerifiedAt: Date | null;
+    status: string;
+    deletedAt: Date | null;
+    firstName: string | null;
+  }): void {
+    try {
+      const to = this.provenEmail(user);
+      if (!to) return;
+      void Promise.resolve(
+        this.mail.sendLoginAlert(to, this.secureUrl(), user.firstName),
+      ).catch(() => undefined);
+    } catch {
+      // The sign-in goes ahead either way.
+    }
+  }
+
+  /**
    * Tell a person their password was changed (EMAIL-01): after a change in the
    * app and after a reset, by link or by code. The person did it themselves,
    * so it also reaches an account in its 30 days of deletion (the same rule as
@@ -457,16 +483,7 @@ export class AuthService {
       signedIn = (await this.deletionWindow().cancelOnSignIn(user.id)).user;
     }
 
-    // Fire-and-forget sign-in alert email, on every sign-in. CTA points at the
-    // account-security page (SECURITY_URL, else the reset-password route).
-    const alertTo = this.provenEmail(signedIn);
-    if (alertTo) {
-      void this.mail.sendLoginAlert(
-        alertTo,
-        this.secureUrl(),
-        signedIn.firstName,
-      );
-    }
+    this.alertSignIn(signedIn);
 
     const pair = await this.tokens.issueTokens(signedIn);
     return { ...pair, user: this.toUserResponse(signedIn) };
@@ -1090,6 +1107,7 @@ export class AuthService {
     }
 
     const pair = await this.tokens.issueTokens(user);
+    this.alertSignIn(user);
     return { ...pair, user: this.toUserResponse(user) };
   }
 
@@ -1308,6 +1326,8 @@ export class AuthService {
     }
 
     const pair = await this.tokens.issueTokens(updated);
+    // The reset starts a session: that is a sign-in too (EMAIL-01).
+    this.alertSignIn(updated);
     return { ...pair, user: this.toUserResponse(updated) };
   }
 

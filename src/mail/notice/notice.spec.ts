@@ -9,7 +9,7 @@ import { NOTICE_KINDS, parseNotice } from './notice-kinds';
 import { noticeContent } from './notice-words';
 
 /**
- * EMAIL-01: the 14 notice kinds the Hub sends (POST /internal/mail/notice).
+ * EMAIL-01: the 16 notice kinds the Hub sends (POST /internal/mail/notice).
  * Pure checks: how money and time read, what data each kind accepts, and the
  * words each kind is rendered to.
  */
@@ -47,7 +47,7 @@ describe('Lagos time', () => {
 });
 
 describe('the kinds', () => {
-  it('are exactly the 14 the contract names', () => {
+  it('are exactly the 16 the contract names', () => {
     expect([...NOTICE_KINDS].sort()).toEqual(
       [
         'account_deleted',
@@ -58,7 +58,9 @@ describe('the kinds', () => {
         'event_cancelled',
         'money_in',
         'paid_message_received',
+        'pass_sold',
         'pin_changed',
+        'question_earned',
         'purchase_receipt',
         'refund_processed',
         'sale_made',
@@ -144,6 +146,11 @@ describe('parseNotice', () => {
     parseNotice('ticket_confirmed', {
       ...NOTICE_SAMPLES.ticket_confirmed,
       place: null,
+    });
+    parseNotice('pass_sold', { ...NOTICE_SAMPLES.pass_sold, buyerName: null });
+    parseNotice('question_earned', {
+      ...NOTICE_SAMPLES.question_earned,
+      fromName: null,
     });
     parseNotice('bill_paid', {
       ...NOTICE_SAMPLES.bill_paid,
@@ -354,20 +361,28 @@ describe('noticeContent', () => {
     expect(JSON.stringify(free)).not.toMatch(/no fee/i);
   });
 
-  it('says what came back when a send failed, and says nothing was returned only when nothing was', () => {
+  it("says a failed send's money is on its way back, never that it was returned (the reversal lands after the send is marked failed)", () => {
     const c = content('bank_send_failed');
     expect(c.facts).toEqual(
       expect.arrayContaining([
         { label: 'Transfer', value: '₦10,000.00' },
-        { label: 'Returned to your wallet', value: '₦10,065.00' },
+        { label: 'Coming back to your wallet', value: '₦10,065.00' },
         { label: 'Reference', value: 'WTX-8H2K9Q' },
       ]),
     );
+    const text = allText('bank_send_failed');
+    expect(text).toContain(
+      'Your ₦10,065.00 is on its way back to your wallet.',
+    );
+    expect(text).not.toMatch(
+      /we returned|has been returned|was returned|returned to your wallet/i,
+    );
     const none = content('bank_send_failed', { returnedMinor: 0 });
     expect(none.facts.map((f) => f.label)).not.toContain(
-      'Returned to your wallet',
+      'Coming back to your wallet',
     );
     expect(none.paragraphs.join(' ')).toMatch(/support/i);
+    expect(JSON.stringify(none)).not.toMatch(/on its way back/i);
   });
 
   it('tells a creator when the earning is paid, the way R-11 and R-101 rule', () => {
@@ -387,6 +402,53 @@ describe('noticeContent', () => {
     expect(tip).toMatch(/open/i);
     expect(allText('tip_received', { paidWhen: 'in_3_working_days' })).toMatch(
       /3 working days/,
+    );
+  });
+
+  it('tells a community pass seller and a question earner when it is paid, the same way a sale is told', () => {
+    for (const kind of ['pass_sold', 'question_earned']) {
+      const now = allText(kind, { paidWhen: 'now' });
+      expect(now).toMatch(/into your wallet/i);
+      expect(now).not.toMatch(/3 working days|open one|landed/i);
+      expect(allText(kind, { paidWhen: 'in_3_working_days' })).toMatch(
+        /3 working days/,
+      );
+      const waiting = allText(kind, { paidWhen: 'when_wallet_opens' });
+      expect(waiting).toMatch(/open/i);
+      expect(waiting).toMatch(/kept|waiting|safe/i);
+      expect(waiting).not.toMatch(/has been added|landed/i);
+    }
+  });
+
+  it('names the community, the buyer and what the pass earned', () => {
+    const c = content('pass_sold');
+    expect(c.headline).toBe('You sold a community pass');
+    expect(c.facts).toEqual([
+      { label: 'Community', value: 'Aba Tailors' },
+      { label: 'Buyer', value: 'Funke A.' },
+      { label: 'You earned', value: '₦4,250.00' },
+      { label: 'Paid', value: 'Into your wallet' },
+    ]);
+    expect(c.paragraphs[0]).toContain('Funke A. bought a pass to Aba Tailors');
+    const anon = content('pass_sold', { buyerName: null });
+    expect(anon.facts.map((f) => f.label)).not.toContain('Buyer');
+    expect(anon.paragraphs[0]).toContain(
+      'Someone bought a pass to Aba Tailors',
+    );
+    expect(c.subject).toContain('Aba Tailors');
+  });
+
+  it('thanks a creator for an answered question with what it earned', () => {
+    const c = content('question_earned');
+    expect(c.headline).toBe('You earned from a paid message');
+    expect(c.facts).toEqual([
+      { label: 'From', value: 'Seun Adebayo' },
+      { label: 'You earned', value: '₦850.00' },
+      { label: 'Paid', value: 'In 3 working days' },
+    ]);
+    expect(c.paragraphs[0]).toContain('You answered Seun Adebayo');
+    expect(content('question_earned', { fromName: null }).facts[0].label).toBe(
+      'You earned',
     );
   });
 
