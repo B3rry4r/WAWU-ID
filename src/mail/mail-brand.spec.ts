@@ -95,7 +95,8 @@ describe('emails say Who Made This?', () => {
   it('keeps the links on the wawuafrica.com domain', async () => {
     await sendEach(mail());
     const html = seen.map((s) => s.html).join('\n');
-    expect(html).toContain('https://wawuafrica.com/email-header.png');
+    // EMAIL-01 round 1: the header picture is WAWU ID's own, on the same domain.
+    expect(html).toContain('https://id.wawuafrica.com/assets/email-header.png');
     expect(html).not.toMatch(/whomadethis/i);
   });
 });

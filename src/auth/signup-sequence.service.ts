@@ -4,6 +4,7 @@ import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { createHash, randomInt } from 'crypto';
 import { MailService } from '../mail/mail.service';
+import { provenEmail } from '../mail/proven-email';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   phoneVerificationConfig,
@@ -113,7 +114,9 @@ export class SignupSequenceService {
   ): Promise<SignupProgressView> {
     // Made outside the transaction: a unique-key clash inside one would abort it.
     await this.record(user);
-    return this.prisma.$transaction(async (tx) => {
+    // Set inside the transaction when this very call finished the sign-up.
+    const ended: { account: WawuUser | null } = { account: null };
+    const view = await this.prisma.$transaction(async (tx) => {
       // One completion at a time per account, so two taps cannot both pass
       // the order check against the same state.
       await tx.$queryRaw`SELECT user_id FROM signup_progress WHERE user_id = ${user.id}::uuid FOR UPDATE`;
@@ -156,8 +159,30 @@ export class SignupSequenceService {
           ...(nextStep(account, after) === 'done' ? { completedAt: now } : {}),
         },
       });
+      if (updated.completedAt) ended.account = account;
       return this.view(account, updated);
     });
+    if (ended.account) this.welcome(ended.account);
+    return view;
+  }
+
+  /**
+   * The welcome (EMAIL-01), at the end of the app's sign-up: the last step has
+   * just been completed, once, because a finished sign-up refuses another. It
+   * goes only to an email that was proven; a person who put the email off is
+   * welcomed by the app alone. Fire and forget: the sign-up is finished either
+   * way.
+   */
+  private welcome(account: WawuUser): void {
+    try {
+      const to = provenEmail(account);
+      if (!to) return;
+      void Promise.resolve(this.mail.sendWelcome(to, account.firstName)).catch(
+        () => undefined,
+      );
+    } catch {
+      // The sign-up is finished either way.
+    }
   }
 
   // ── proving the email ──────────────────────────────────────────────────────

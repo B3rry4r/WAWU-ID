@@ -150,6 +150,7 @@ model WawuUser {
   signupProgress   SignupProgress?
   signupEmailCode  SignupEmailCode?
   deletionWindow   DeletionWindow?
+  mailNotices      MailNotice[]
 
   @@map("wawu_users")
 }
@@ -410,4 +411,30 @@ model DeletionWindow {
   user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("deletion_windows")
+}
+
+/// EMAIL-01. One row per notice mail the Hub asked for
+/// (POST /internal/mail/notice), keyed by the Hub's own idempotency key. The
+/// insert is the claim: of two calls that arrive together with one key, the
+/// database lets exactly one in, and only that one sends. `sending` is a mail
+/// that was claimed and not yet answered for; `sent` is one the provider took.
+/// A claim whose send failed is deleted, so the Hub's retry sends. A `sending`
+/// row older than the claim's life (a server that died mid-send) is taken over
+/// by the next call. The row holds no address, name or amount: the words are
+/// rebuilt from the Hub's data on every send and kept nowhere.
+model MailNotice {
+  idempotencyKey String    @id @map("idempotency_key") @db.VarChar(128)
+  userId         String    @map("user_id") @db.Uuid
+  kind           String    @db.VarChar(40)
+  status         String    @db.VarChar(10)
+  claimedAt      DateTime  @map("claimed_at")
+  sentAt         DateTime? @map("sent_at")
+  /// The provider's own id for the mail, kept to trace a send.
+  providerId     String?   @map("provider_id")
+
+  user WawuUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([claimedAt])
+  @@map("mail_notices")
 }

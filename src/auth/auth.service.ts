@@ -35,6 +35,10 @@ import { DELETED_PHONE_PREFIX, phoneForClients } from './released-phone';
 import { countryForSignup } from './signup-country';
 import { DeletionWindowService } from './deletion-window.service';
 import { isDeletedOrDeleting } from './deletion-window';
+import {
+  ownProvenEmail as ownProvenAddress,
+  provenEmail as provenAddress,
+} from '../mail/proven-email';
 import { HubAccountClient } from './hub-account.client';
 import { deleteAccountsMatching } from './account-removal';
 import { holdsUnprovenPhone, removePendingSignup } from './unproven-phone';
@@ -136,8 +140,7 @@ export class AuthService {
     // Nothing a service sends on its own goes to an account in its 30 days of
     // deletion or already deleted (SETTINGS-08). The type asks for both fields
     // on purpose: a caller that does not select them does not compile.
-    if (isDeletedOrDeleting(user)) return null;
-    return this.ownProvenEmail(user);
+    return provenAddress(user);
   }
 
   /**
@@ -149,8 +152,74 @@ export class AuthService {
     emailVerified: boolean;
     phoneVerifiedAt: Date | null;
   }): string | null {
-    if (!user.email) return null;
-    return user.emailVerified || !user.phoneVerifiedAt ? user.email : null;
+    return ownProvenAddress(user);
+  }
+
+  /**
+   * Where "Secure my account" goes in a sign-in alert and a password-changed
+   * mail (env-overridable, defaults to the reset-password route on APP_URL).
+   * No /auth prefix: the frontend's (auth) route group is stripped from the
+   * URL, so the live route is /forgot-password (not /auth/forgot-password).
+   */
+  private secureUrl(): string {
+    const appUrl = (
+      this.config.get<string>('FRONTEND_URL') ??
+      this.config.get<string>('APP_URL') ??
+      ''
+    ).replace(/\/+$/, '');
+    return (
+      this.config.get<string>('SECURITY_URL') ?? `${appUrl}/forgot-password`
+    );
+  }
+
+  /**
+   * The sign-in alert (EMAIL-01): one mail for each sign-in, whichever way it
+   * happened (a password, a phone code, the session a reset by code starts).
+   * Fire and forget, to a proven address only; the sign-in is made either way.
+   * CTA points at the account-security page (SECURITY_URL, else the
+   * reset-password route).
+   */
+  private alertSignIn(user: {
+    email: string | null;
+    emailVerified: boolean;
+    phoneVerifiedAt: Date | null;
+    status: string;
+    deletedAt: Date | null;
+    firstName: string | null;
+  }): void {
+    try {
+      const to = this.provenEmail(user);
+      if (!to) return;
+      void Promise.resolve(
+        this.mail.sendLoginAlert(to, this.secureUrl(), user.firstName),
+      ).catch(() => undefined);
+    } catch {
+      // The sign-in goes ahead either way.
+    }
+  }
+
+  /**
+   * Tell a person their password was changed (EMAIL-01): after a change in the
+   * app and after a reset, by link or by code. The person did it themselves,
+   * so it also reaches an account in its 30 days of deletion (the same rule as
+   * the reset link). Fire and forget: a mail that cannot be sent, or does not
+   * exist, never breaks the change that caused it.
+   */
+  notifyPasswordChanged(user: {
+    email: string | null;
+    emailVerified: boolean;
+    phoneVerifiedAt: Date | null;
+    firstName: string | null;
+  }): void {
+    try {
+      const to = this.ownProvenEmail(user);
+      if (!to) return;
+      void Promise.resolve(
+        this.mail.sendPasswordChanged(to, this.secureUrl(), user.firstName),
+      ).catch(() => undefined);
+    } catch {
+      // The password is changed either way.
+    }
   }
 
   private deletionWindowService?: DeletionWindowService;
@@ -414,21 +483,7 @@ export class AuthService {
       signedIn = (await this.deletionWindow().cancelOnSignIn(user.id)).user;
     }
 
-    // Fire-and-forget login-alert email. CTA points at the account-security
-    // page (env-overridable, defaults to the reset-password route on APP_URL).
-    const alertTo = this.provenEmail(signedIn);
-    if (alertTo) {
-      const appUrl = (
-        this.config.get<string>('FRONTEND_URL') ??
-        this.config.get<string>('APP_URL') ??
-        ''
-      ).replace(/\/+$/, '');
-      // No /auth prefix: the frontend's (auth) route group is stripped from the
-      // URL, so the live route is /forgot-password (not /auth/forgot-password).
-      const secureUrl =
-        this.config.get<string>('SECURITY_URL') ?? `${appUrl}/forgot-password`;
-      void this.mail.sendLoginAlert(alertTo, secureUrl, signedIn.firstName);
-    }
+    this.alertSignIn(signedIn);
 
     const pair = await this.tokens.issueTokens(signedIn);
     return { ...pair, user: this.toUserResponse(signedIn) };
@@ -1052,6 +1107,7 @@ export class AuthService {
     }
 
     const pair = await this.tokens.issueTokens(user);
+    this.alertSignIn(user);
     return { ...pair, user: this.toUserResponse(user) };
   }
 
@@ -1261,6 +1317,7 @@ export class AuthService {
     });
     // Invalidate every other active session for this user.
     await this.prisma.refreshToken.deleteMany({ where: { userId: user.id } });
+    this.notifyPasswordChanged(updated);
 
     // The code proved the person: in their 30 days of deletion that cancels it,
     // as a sign-in does (R-17, SETTINGS-08).
@@ -1269,6 +1326,8 @@ export class AuthService {
     }
 
     const pair = await this.tokens.issueTokens(updated);
+    // The reset starts a session: that is a sign-in too (EMAIL-01).
+    this.alertSignIn(updated);
     return { ...pair, user: this.toUserResponse(updated) };
   }
 
@@ -1306,6 +1365,7 @@ export class AuthService {
       this.prisma.passwordResetToken.deleteMany({ where: { userId: user.id } }),
       this.prisma.refreshToken.deleteMany({ where: { userId: user.id } }),
     ]);
+    this.notifyPasswordChanged(user);
 
     return { message: 'Password reset successfully' };
   }

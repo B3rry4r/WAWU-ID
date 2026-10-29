@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { exportDeadlineText } from './data-export-link';
+import { htmlToText } from './mail-text';
 import {
   labelOf,
   type MoneyCheckReportMail,
@@ -11,16 +12,9 @@ import {
   subjectOf,
   VERDICT_SENTENCE,
 } from './money-check-report';
+import { formatLagosDateTime } from './notice/notice-format';
+import type { Fact, NoticeContent } from './notice/notice-words';
 
-/**
- * The email header banner.
- *
- * This pointed at `production.wawuafrica.com`, which is the previous PHP
- * platform's domain. That host is being decommissioned, so every email sent
- * after it goes offline would have rendered with a broken header image. It now
- * points at the new web app, which serves /email-header.png with the current
- * trademarked mark. EMAIL_HEADER_URL still overrides it per environment.
- */
 /**
  * Mirrors the web app's tokens.css so an email and the app it belongs to look
  * like the same product. Flattened to solid hex: email clients cannot be
@@ -41,17 +35,17 @@ const MAIL_COLORS = {
 } as const;
 
 /**
- * The banner at the top of every WAWUAfrica email.
- *
- * This pointed at a Railway host that answers 404. The app has been on Vercel
- * behind wawuafrica.com for a long time, so the image in every email we have
- * ever sent was a broken-image box, whatever the client.
+ * The banner at the top of every email: WAWU ID's own picture, drawn from the
+ * app's mark and name, so it reads "Who Made This?" (EMAIL-01 round 1). The
+ * web app's old banner read "WAWUAfrica" and is left where it is.
  *
  * It has to be an absolute, publicly reachable URL: mail clients fetch it from
  * their own network with no session, so anything behind auth, or on a host
- * that no longer exists, silently renders as nothing.
+ * that no longer exists, silently renders as nothing. WAWU ID serves it at
+ * /assets/email-header.png (EmailHeaderController). EMAIL_HEADER_URL still
+ * overrides it per environment.
  */
-const DEFAULT_HEADER_URL = 'https://wawuafrica.com/email-header.png';
+const DEFAULT_HEADER_URL = 'https://id.wawuafrica.com/assets/email-header.png';
 
 /** Options for the shared WAWUAfrica email layout. */
 interface LayoutOptions {
@@ -59,6 +53,10 @@ interface LayoutOptions {
   preheader: string;
   /** First name for the "Hello {{First Name}}," greeting. Optional. */
   firstName?: string | null;
+  /** The one headline, above the greeting (EMAIL-01). Optional. */
+  headline?: string;
+  /** A facts box of label and value rows, for money and dates (EMAIL-01). Optional. */
+  facts?: Fact[];
   /** Main body HTML (paragraphs, lists) injected into the white card. */
   bodyHtml: string;
   /** Optional single primary CTA rendered as a dark pill button. */
@@ -183,6 +181,8 @@ export class MailService {
         to,
         subject,
         html,
+        // Every mail also goes as plain text, made from the same html.
+        text: htmlToText(html),
       });
       // Resend answers an error as data, not as a throw.
       if (result.error) throw new Error(result.error.message);
@@ -308,6 +308,10 @@ export class MailService {
     const greeting = opts.firstName
       ? `<p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:${MAIL_COLORS.textPrimary};font-weight:600;">Hello ${this.escape(opts.firstName)},</p>`
       : '';
+    const headline = opts.headline
+      ? `<h1 style="margin:0 0 18px;font-size:26px;line-height:1.25;font-weight:700;color:${MAIL_COLORS.textPrimary};">${this.escape(opts.headline)}</h1>`
+      : '';
+    const facts = this.factsBox(opts.facts ?? []);
     const cta = opts.cta
       ? `
             <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 4px;">
@@ -342,10 +346,12 @@ export class MailService {
         </tr>
         <tr>
           <td bgcolor="${MAIL_COLORS.card}" style="background-color:${MAIL_COLORS.card};border-radius:0 0 14px 14px;border-left:1px solid ${MAIL_COLORS.hairline};border-right:1px solid ${MAIL_COLORS.hairline};border-bottom:1px solid ${MAIL_COLORS.hairline};padding:36px 40px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            ${headline}
             ${greeting}
             <div style="font-size:16px;line-height:1.65;color:${MAIL_COLORS.textSecondary};">
               ${opts.bodyHtml}
             </div>
+            ${facts}
             ${cta}
           </td>
         </tr>
@@ -367,6 +373,46 @@ export class MailService {
 
   private p(text: string): string {
     return `<p style="margin:0 0 16px;color:${MAIL_COLORS.textSecondary};">${text}</p>`;
+  }
+
+  /**
+   * The facts box: label and value rows for money and dates. Each row is
+   * marked `data-fact` so the plain-text part reads it back as "Label: value".
+   * Everything in it is escaped here.
+   */
+  private factsBox(facts: Fact[]): string {
+    if (facts.length === 0) return '';
+    const font = `font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;`;
+    const rows = facts
+      .map((f, i) => {
+        const edge =
+          i === facts.length - 1
+            ? ''
+            : `border-bottom:1px solid ${MAIL_COLORS.hairline};`;
+        return `<tr data-fact="1"><td width="38%" valign="top" style="padding:12px 16px;${edge}${font}font-size:13px;line-height:1.5;color:${MAIL_COLORS.textMuted};">${this.escape(f.label)}</td><td valign="top" style="padding:12px 16px;${edge}${font}font-size:15px;line-height:1.5;font-weight:600;color:${MAIL_COLORS.textPrimary};word-break:break-word;">${this.escape(f.value)}</td></tr>`;
+      })
+      .join('');
+    return `
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${MAIL_COLORS.tag}" style="margin:22px 0 4px;background-color:${MAIL_COLORS.tag};border:1px solid ${MAIL_COLORS.hairline};border-radius:12px;">${rows}</table>`;
+  }
+
+  /**
+   * A notice mail (EMAIL-01, POST /internal/mail/notice) as html and plain
+   * text: the headline, a short body, the facts box, no button. The words come
+   * from `noticeContent()`; this puts them in the layout and escapes them.
+   */
+  renderNotice(
+    content: NoticeContent,
+    firstName?: string | null,
+  ): { html: string; text: string } {
+    const html = this.layout({
+      preheader: content.preheader,
+      firstName,
+      headline: content.headline,
+      bodyHtml: content.paragraphs.map((t) => this.p(this.escape(t))).join(''),
+      facts: content.facts,
+    });
+    return { html, text: htmlToText(html) };
   }
 
   // ── boss templates ──────────────────────────────────────────────────────────
@@ -601,20 +647,20 @@ export class MailService {
     );
   }
 
+  /**
+   * The welcome. Sent once the person's email is proven on the web, and once
+   * more at the end of the app's sign-up when the email was proven there
+   * (AuthService.verifyEmail, SignupSequenceService.complete). The sign-off
+   * is the live one and stays: it names the company the person leads, not the
+   * product.
+   */
   async sendWelcome(email: string, firstName?: string | null): Promise<void> {
     const body = [
-      this.p('Welcome to Who Made This? We are so glad to have you with us.'),
       this.p(
         'You are now part of a community of Africans who refuse to believe that opportunity should be limited by geography, background, or circumstance.',
       ),
       this.p(
-        'Some join to learn. Some come for opportunities. Others arrive to grow their businesses, connect with new people, or discover new markets. Whatever brought you here, we are glad you came.',
-      ),
-      this.p(
-        'This is your space to connect, contribute, learn, trade, grow, and build meaningful relationships across Africa.',
-      ),
-      this.p(
-        'Your next step is simple: complete your profile and start exploring.',
+        'This is your space to connect, learn, and grow. Your next step is simple: complete your profile and start exploring.',
       ),
       this.p(
         "Africa's future is not waiting to be built. It is already being built by people like you. See you inside.",
@@ -628,6 +674,7 @@ export class MailService {
       this.layout({
         preheader: 'You are now part of the Who Made This? community.',
         firstName,
+        headline: 'Welcome to Who Made This?',
         bodyHtml: body,
       }),
     );
@@ -765,27 +812,70 @@ export class MailService {
     );
   }
 
-  /** [LOGIN ALERT] Was This You? */
+  /**
+   * [SIGN-IN ALERT] Sent on every sign-in (EMAIL-01). It says when, never
+   * which device or where: nothing here knows either, and a guess would be
+   * worse than silence.
+   */
   async sendLoginAlert(
     email: string,
     secureUrl: string,
     firstName?: string | null,
+    at: Date = new Date(),
   ): Promise<void> {
     const body = [
       this.p(
-        'A new login was detected on your Who Made This? account. If this was you, you are all set. If not, please secure your account immediately.',
+        'Your Who Made This? account was just signed in to. If this was you, you do not need to do anything.',
       ),
-      this.p('Better safe than sorry.'),
+      this.p(
+        'If it was not you, reset your password now so nobody else can get in.',
+      ),
     ].join('');
 
     await this.send(
       email,
-      'Was This You?',
+      'New sign-in to your account',
       this.layout({
-        preheader: 'A new login was detected on your account.',
+        preheader: 'Your Who Made This? account was just signed in to.',
         firstName,
+        headline: 'You just signed in',
         bodyHtml: body,
-        cta: { label: 'Secure My Account', url: secureUrl },
+        facts: [{ label: 'When', value: formatLagosDateTime(at) }],
+        cta: { label: 'Secure my account', url: secureUrl },
+      }),
+    );
+  }
+
+  /**
+   * [PASSWORD CHANGED] Sent after a password is changed in the app and after
+   * a reset (EMAIL-01). Every other device is signed out by both, so the mail
+   * says so.
+   */
+  async sendPasswordChanged(
+    email: string,
+    secureUrl: string,
+    firstName?: string | null,
+    at: Date = new Date(),
+  ): Promise<void> {
+    const body = [
+      this.p(
+        'The password for your Who Made This? account was changed, and any other device that was signed in has been signed out. If you did this, you do not need to do anything.',
+      ),
+      this.p(
+        'If you did not, reset your password now and contact support from the app.',
+      ),
+    ].join('');
+
+    await this.send(
+      email,
+      'Your password was changed',
+      this.layout({
+        preheader: 'The password for your Who Made This? account was changed.',
+        firstName,
+        headline: 'Your password was changed',
+        bodyHtml: body,
+        facts: [{ label: 'When', value: formatLagosDateTime(at) }],
+        cta: { label: 'Reset my password', url: secureUrl },
       }),
     );
   }
@@ -835,26 +925,28 @@ export class MailService {
     );
   }
 
-  /** [ACCOUNT APPROVED] Good News. You are Officially Part Of The Ecosystem */
+  /**
+   * [YOU'RE VERIFIED] Sent when a verification tick is granted (it was
+   * "account approved"; the method keeps its name so no caller changes).
+   */
   async sendAccountApproved(
     email: string,
     firstName?: string | null,
   ): Promise<void> {
     const body = [
       this.p(
-        'Your account has been approved. That means you are ready to start exploring opportunities, connecting with people, joining conversations, and becoming part of one of Africa’s fastest-growing communities.',
+        'Your verification is active, and your badge now shows on your profile.',
       ),
-      this.p(
-        'Your seat at the table is ready. Let us build something remarkable together.',
-      ),
+      this.p('Verified accounts can upload more and reach more people.'),
     ].join('');
 
     await this.send(
       email,
-      'Good News. You are Officially Part Of The Ecosystem',
+      "You're verified",
       this.layout({
-        preheader: 'Your Who Made This? account has been approved.',
+        preheader: 'Your badge is now on your profile.',
         firstName,
+        headline: "You're verified",
         bodyHtml: body,
       }),
     );
