@@ -201,7 +201,7 @@ export class AuthController {
     status: 403,
     type: ErrorBody,
     description:
-      'EMAIL_NOT_VERIFIED, PHONE_NOT_CONFIRMED (a sign-up whose phone code was never entered: resume it), ACCOUNT_DELETION_PERIOD_ENDED (the 30 days of a deletion are over, nothing is restored), ACCOUNT_DELETION_IN_PROGRESS (the purge has started; `message` is the Hub\'s own sentence, show it as it is).',
+      "EMAIL_NOT_VERIFIED, PHONE_NOT_CONFIRMED (a sign-up whose phone code was never entered: resume it), ACCOUNT_DELETION_PERIOD_ENDED (the 30 days of a deletion are over, nothing is restored), ACCOUNT_DELETION_IN_PROGRESS (the purge has started; `message` is the Hub's own sentence, show it as it is).",
   })
   @ApiResponse({
     status: 404,
@@ -292,13 +292,14 @@ export class AuthController {
   })
   async changePassword(@Body() dto: ChangePasswordDto, @Req() req: Request) {
     const user = await this.session.accountFor(req);
-    return {
-      data: await this.security.changePassword(
-        user,
-        dto.currentPassword,
-        dto.newPassword,
-      ),
-    };
+    const pair = await this.security.changePassword(
+      user,
+      dto.currentPassword,
+      dto.newPassword,
+    );
+    // Only a change that went through is told (EMAIL-01).
+    this.auth.notifyPasswordChanged(user);
+    return { data: pair };
   }
 
   @Post('otp/start')
