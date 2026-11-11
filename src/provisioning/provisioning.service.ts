@@ -9,6 +9,7 @@ import { deleteAccountsMatching } from '../auth/account-removal';
 import { countryForSignup } from '../auth/signup-country';
 import { TokensService } from '../auth/tokens.service';
 import { PoliciesService } from '../policies/policies.service';
+import { appBaseUrl } from '../mail/app-url';
 
 /** One record from the WAWUAfrica provisioning export (Brief Section 2). */
 interface ExportRecord {
@@ -50,8 +51,6 @@ export class ProvisioningService {
   private readonly logger = new Logger(ProvisioningService.name);
   private static readonly PER_PAGE = 500;
   private static readonly DEFAULT_API_URL = 'https://production.wawuafrica.com';
-  // Frontend base for email links (activation/reset) — NOT the API host.
-  private static readonly DEFAULT_APP_URL = 'https://wawuafrica.com';
 
   private state: ProvisioningStatus = {
     status: 'idle',
@@ -277,11 +276,7 @@ export class ProvisioningService {
         const activationToken = await this.tokens.issueActivationToken(
           existing.id,
         );
-        const appUrl = (
-          this.config.get<string>('FRONTEND_URL') ||
-          this.config.get<string>('APP_URL') ||
-          'https://wawuafrica.com'
-        ).replace(/\/+$/, '');
+        const appUrl = appBaseUrl(this.config);
         const activationUrl = `${appUrl}/activate?token=${activationToken}&email=${encodeURIComponent(existing.email)}`;
         await this.mail.sendPasswordCreation(
           existing.email,
@@ -314,11 +309,7 @@ export class ProvisioningService {
       activationToken = await this.tokens.issueActivationToken(created.id);
       // Email links must point at the FRONTEND, not this API. Prefer FRONTEND_URL;
       // APP_URL is a legacy fallback (it has historically been mis-set to the API).
-      const appUrl = (
-        this.config.get<string>('FRONTEND_URL') ||
-        this.config.get<string>('APP_URL') ||
-        'https://wawuafrica.com'
-      ).replace(/\/+$/, '');
+      const appUrl = appBaseUrl(this.config);
       // Path has NO /auth prefix: the frontend keeps these pages under the
       // (auth) ROUTE GROUP, which Next.js strips from the URL — the live route
       // is /activate, not /auth/activate (which 404s).
@@ -386,11 +377,7 @@ export class ProvisioningService {
     // The activation link points at the app's activation route, mirroring the
     // password-reset link shape (token + email so the route can identify the
     // account and consume the one-time token).
-    const appUrl = (
-      this.config.get<string>('FRONTEND_URL') ||
-      this.config.get<string>('APP_URL') ||
-      ProvisioningService.DEFAULT_APP_URL
-    ).replace(/\/+$/, '');
+    const appUrl = appBaseUrl(this.config);
     // No /auth prefix — the frontend serves /activate via the (auth) route
     // group, which Next.js strips from the URL (/auth/activate 404s).
     const activationUrl = `${appUrl}/activate?token=${rawToken}&email=${encodeURIComponent(
