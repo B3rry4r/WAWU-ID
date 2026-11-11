@@ -43,6 +43,7 @@ import { HubAccountClient } from './hub-account.client';
 import { deleteAccountsMatching } from './account-removal';
 import { holdsUnprovenPhone, removePendingSignup } from './unproven-phone';
 import { TokenPair, TokensService } from './tokens.service';
+import { appBaseUrl, securityUrl } from '../mail/app-url';
 
 export interface UserResponse {
   id: string;
@@ -162,14 +163,7 @@ export class AuthService {
    * URL, so the live route is /forgot-password (not /auth/forgot-password).
    */
   private secureUrl(): string {
-    const appUrl = (
-      this.config.get<string>('FRONTEND_URL') ??
-      this.config.get<string>('APP_URL') ??
-      ''
-    ).replace(/\/+$/, '');
-    return (
-      this.config.get<string>('SECURITY_URL') ?? `${appUrl}/forgot-password`
-    );
+    return securityUrl(this.config);
   }
 
   /**
@@ -1245,10 +1239,7 @@ export class AuthService {
           },
         });
 
-        const appUrl =
-          this.config.get<string>('FRONTEND_URL') ??
-          this.config.get<string>('APP_URL') ??
-          '';
+        const appUrl = appBaseUrl(this.config);
         // No /auth prefix — the frontend serves /reset-password via the (auth)
         // route group, which Next.js strips from the URL (/auth/... 404s).
         const resetUrl = `${appUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
