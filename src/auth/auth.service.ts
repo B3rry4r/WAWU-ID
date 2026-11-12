@@ -20,6 +20,7 @@ import {
   type VerificationTickName,
 } from '../common/verification.util';
 import { MailSendError, MailService } from '../mail/mail.service';
+import { mailAppFor, type MailApp } from '../mail/voices/mail-app';
 import { parseDataExportLink } from '../mail/data-export-link';
 import { parseMoneyCheckReport } from '../mail/money-check-report';
 import { parsePinResetCode } from '../mail/pin-reset-code';
@@ -173,19 +174,32 @@ export class AuthService {
    * CTA points at the account-security page (SECURITY_URL, else the
    * reset-password route).
    */
-  private alertSignIn(user: {
-    email: string | null;
-    emailVerified: boolean;
-    phoneVerifiedAt: Date | null;
-    status: string;
-    deletedAt: Date | null;
-    firstName: string | null;
-  }): void {
+  private alertSignIn(
+    user: {
+      signupApp?: string | null;
+      email: string | null;
+      emailVerified: boolean;
+      phoneVerifiedAt: Date | null;
+      status: string;
+      deletedAt: Date | null;
+      firstName: string | null;
+    },
+    app?: MailApp,
+  ): void {
     try {
       const to = this.provenEmail(user);
       if (!to) return;
+      const which = mailAppFor(app);
       void Promise.resolve(
-        this.mail.sendLoginAlert(to, this.secureUrl(), user.firstName),
+        which
+          ? this.mail.sendLoginAlert(
+              to,
+              this.secureUrl(),
+              user.firstName,
+              new Date(),
+              which,
+            )
+          : this.mail.sendLoginAlert(to, this.secureUrl(), user.firstName),
       ).catch(() => undefined);
     } catch {
       // The sign-in goes ahead either way.
@@ -199,17 +213,30 @@ export class AuthService {
    * the reset link). Fire and forget: a mail that cannot be sent, or does not
    * exist, never breaks the change that caused it.
    */
-  notifyPasswordChanged(user: {
-    email: string | null;
-    emailVerified: boolean;
-    phoneVerifiedAt: Date | null;
-    firstName: string | null;
-  }): void {
+  notifyPasswordChanged(
+    user: {
+      signupApp?: string | null;
+      email: string | null;
+      emailVerified: boolean;
+      phoneVerifiedAt: Date | null;
+      firstName: string | null;
+    },
+    app?: MailApp,
+  ): void {
     try {
       const to = this.ownProvenEmail(user);
       if (!to) return;
+      const which = mailAppFor(app);
       void Promise.resolve(
-        this.mail.sendPasswordChanged(to, this.secureUrl(), user.firstName),
+        which
+          ? this.mail.sendPasswordChanged(
+              to,
+              this.secureUrl(),
+              user.firstName,
+              new Date(),
+              which,
+            )
+          : this.mail.sendPasswordChanged(to, this.secureUrl(), user.firstName),
       ).catch(() => undefined);
     } catch {
       // The password is changed either way.
@@ -371,6 +398,9 @@ export class AuthService {
         verificationTier: 'basic',
         trustScore: 0,
         status: 'active',
+        // VOICES-MAIL (V-44): remembered so later mails (a sign-in alert, a
+        // reset on another device) are VOICES mails. Null for everyone else.
+        signupApp: dto.app === 'voices' ? 'voices' : null,
       },
     });
 
@@ -477,7 +507,7 @@ export class AuthService {
       signedIn = (await this.deletionWindow().cancelOnSignIn(user.id)).user;
     }
 
-    this.alertSignIn(signedIn);
+    this.alertSignIn(signedIn, dto.app);
 
     const pair = await this.tokens.issueTokens(signedIn);
     return { ...pair, user: this.toUserResponse(signedIn) };
@@ -1122,6 +1152,7 @@ export class AuthService {
 
   async emailVerifyStart(
     email: string,
+    app?: MailApp,
   ): Promise<{ message: string; expiresIn: number }> {
     const user = await this.prisma.wawuUser.findUnique({ where: { email } });
     if (!user) {
@@ -1149,7 +1180,24 @@ export class AuthService {
       }),
     ]);
 
-    await this.mail.sendOtpCode(email, code, 'verify your email address');
+    // VOICES-MAIL (V-44): a VOICES request (or a VOICES person) gets the
+    // VOICES code mail, which says what is true: 5 minutes.
+    const which = mailAppFor(app);
+    if (which) {
+      await this.mail.sendOtpCode(
+        email,
+        code,
+        'verify your email address',
+        false,
+        {
+          app: which,
+          firstName: user.firstName,
+          expiresInMinutes: EMAIL_VERIFY_TTL_MS / 60_000,
+        },
+      );
+    } else {
+      await this.mail.sendOtpCode(email, code, 'verify your email address');
+    }
 
     return { message: 'Verification code sent', expiresIn: 300 };
   }
@@ -1157,6 +1205,7 @@ export class AuthService {
   async emailVerifyConfirm(
     email: string,
     code: string,
+    app?: MailApp,
   ): Promise<TokenPair & { user: UserResponse }> {
     const user = await this.prisma.wawuUser.findUnique({
       where: { email },
@@ -1188,7 +1237,10 @@ export class AuthService {
     // and "see you inside" is finally true. Guarded on the transition so
     // re-verifying (a second device, a stale tab) does not send it twice.
     if (!wasVerified && updated.email) {
-      void this.mail.sendWelcome(updated.email, updated.firstName);
+      const which = mailAppFor(app);
+      void (which
+        ? this.mail.sendWelcome(updated.email, updated.firstName, which)
+        : this.mail.sendWelcome(updated.email, updated.firstName));
     }
 
     const pair = await this.tokens.issueTokens(updated);
@@ -1201,6 +1253,7 @@ export class AuthService {
   async forgotPassword(
     identifier: string,
     method: 'sms' | 'email' = 'sms',
+    app?: MailApp,
   ): Promise<{ message: string; expiresInSeconds?: number }> {
     // The link's lifetime, told to a caller that asked for a link (AUTH-01:
     // the app's "Check your email" screen shows it). It is the same figure in
@@ -1239,11 +1292,23 @@ export class AuthService {
           },
         });
 
-        const appUrl = appBaseUrl(this.config);
+        // VOICES-MAIL (V-44): a VOICES person's link opens usevoices.com,
+        // never the Who Made This? site.
+        const which = mailAppFor(app);
+        const appUrl = which
+          ? this.mail.getVoicesUrls().app
+          : appBaseUrl(this.config);
         // No /auth prefix — the frontend serves /reset-password via the (auth)
         // route group, which Next.js strips from the URL (/auth/... 404s).
         const resetUrl = `${appUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(user.email)}`;
-        await this.mail.sendPasswordReset(user.email, resetUrl, user.firstName);
+        await (which
+          ? this.mail.sendPasswordReset(
+              user.email,
+              resetUrl,
+              user.firstName,
+              which,
+            )
+          : this.mail.sendPasswordReset(user.email, resetUrl, user.firstName));
       } else if (phoneForClients(user.phone) && !holdsUnprovenPhone(user)) {
         // Mobile apps: send a 6-digit reset code over WhatsApp. Not to a
         // number the account only typed at sign-up: whoever holds that number
@@ -1266,10 +1331,20 @@ export class AuthService {
     dto: ResetPasswordDto,
   ): Promise<{ message: string } | (TokenPair & { user: UserResponse })> {
     if (dto.identifier && dto.code && dto.newPassword) {
-      return this.resetPasswordBySms(dto.identifier, dto.code, dto.newPassword);
+      return this.resetPasswordBySms(
+        dto.identifier,
+        dto.code,
+        dto.newPassword,
+        dto.app,
+      );
     }
     if (dto.token && dto.email && dto.password) {
-      return this.resetPasswordByToken(dto.token, dto.email, dto.password);
+      return this.resetPasswordByToken(
+        dto.token,
+        dto.email,
+        dto.password,
+        dto.app,
+      );
     }
     throw new BadRequestException(
       'Provide either { identifier, code, newPassword } or { token, email, password }',
@@ -1280,6 +1355,7 @@ export class AuthService {
     identifier: string,
     code: string,
     newPassword: string,
+    app?: MailApp,
   ): Promise<TokenPair & { user: UserResponse }> {
     const user = await this.prisma.wawuUser.findFirst({
       where: {
@@ -1308,7 +1384,7 @@ export class AuthService {
     });
     // Invalidate every other active session for this user.
     await this.prisma.refreshToken.deleteMany({ where: { userId: user.id } });
-    this.notifyPasswordChanged(updated);
+    this.notifyPasswordChanged(updated, app);
 
     // The code proved the person: in their 30 days of deletion that cancels it,
     // as a sign-in does (R-17, SETTINGS-08).
@@ -1318,7 +1394,7 @@ export class AuthService {
 
     const pair = await this.tokens.issueTokens(updated);
     // The reset starts a session: that is a sign-in too (EMAIL-01).
-    this.alertSignIn(updated);
+    this.alertSignIn(updated, app);
     return { ...pair, user: this.toUserResponse(updated) };
   }
 
@@ -1326,6 +1402,7 @@ export class AuthService {
     token: string,
     rawEmail: string,
     password: string,
+    app?: MailApp,
   ): Promise<{ message: string }> {
     const email = rawEmail.toLowerCase().trim();
     const user = await this.prisma.wawuUser.findUnique({ where: { email } });
@@ -1356,7 +1433,7 @@ export class AuthService {
       this.prisma.passwordResetToken.deleteMany({ where: { userId: user.id } }),
       this.prisma.refreshToken.deleteMany({ where: { userId: user.id } }),
     ]);
-    this.notifyPasswordChanged(user);
+    this.notifyPasswordChanged(user, app);
 
     return { message: 'Password reset successfully' };
   }

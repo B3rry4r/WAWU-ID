@@ -14,6 +14,19 @@ import {
 } from './money-check-report';
 import { formatLagosDateTime } from './notice/notice-format';
 import type { Fact, NoticeContent } from './notice/notice-words';
+import type { MailApp } from './voices/mail-app';
+import {
+  DEFAULT_VOICES_URL,
+  voicesDeleted,
+  voicesDeletionStarted,
+  voicesPasswordChanged,
+  voicesPasswordReset,
+  voicesSignInAlert,
+  voicesVerifyCode,
+  voicesWelcome,
+  type VoicesMail,
+  type VoicesMailUrls,
+} from './voices/voices-mail';
 
 /**
  * Mirrors the web app's tokens.css so an email and the app it belongs to look
@@ -69,6 +82,10 @@ export interface OtpCodeOptions {
   expiresInMinutes?: number;
   /** false keeps the recipient's address out of the mailer's log lines. Default true. */
   logRecipient?: boolean;
+  /** "voices" sends the VOICES email-code mail instead (VOICES-MAIL, V-44). */
+  app?: MailApp;
+  /** The first name the VOICES mail greets, when the caller knows it. */
+  firstName?: string | null;
 }
 
 /**
@@ -106,6 +123,8 @@ export interface RelayedMail {
   html: string;
   text: string;
   headers?: Record<string, string>;
+  /** Only WAWU ID's own code sets this (the VOICES sender); a caller of the relay cannot. */
+  from?: string;
   /** Kept on the provider's record of the mail (the campaign id). */
   tag?: string;
   /** Same key on a retry: the provider answers with the first result. */
@@ -124,6 +143,9 @@ export class MailService {
   private readonly resend: Resend | null;
   private readonly from: string;
   private readonly headerUrl: string;
+  /** VOICES-MAIL (V-44): the sender of a VOICES mail; unset means `from`. */
+  private readonly voicesFrom: string | undefined;
+  private readonly voicesUrls: VoicesMailUrls;
 
   constructor(private readonly config: ConfigService) {
     this.from =
@@ -131,6 +153,21 @@ export class MailService {
       'Who Made This? <noreply@wawuafrica.com>';
     this.headerUrl =
       this.config.get<string>('EMAIL_HEADER_URL') ?? DEFAULT_HEADER_URL;
+    // VOICES mails go from the same sender as every other mail until
+    // VOICES_MAIL_FROM is set, and show their logos from this service's own
+    // /assets/voices (served beside the header picture).
+    this.voicesFrom =
+      this.config.get<string>('VOICES_MAIL_FROM')?.trim() || undefined;
+    const voicesApp = (
+      this.config.get<string>('VOICES_APP_URL')?.trim() || DEFAULT_VOICES_URL
+    ).replace(/\/+$/, '');
+    this.voicesUrls = {
+      app: voicesApp,
+      assets: (
+        this.config.get<string>('VOICES_MAIL_ASSET_URL')?.trim() ||
+        `${this.headerUrl.replace(/\/[^/]*$/, '')}/voices`
+      ).replace(/\/+$/, ''),
+    };
     const apiKey = this.config.get<string>('RESEND_API_KEY');
     if (!apiKey) {
       this.logger.warn('RESEND_API_KEY not set — emails will be skipped');
@@ -158,6 +195,7 @@ export class MailService {
     html: string,
     strict = false,
     logRecipient = true,
+    from?: string,
   ): Promise<void> {
     if (!this.resend) {
       if (strict) throw new MailSendError('no mail transport is configured');
@@ -177,7 +215,7 @@ export class MailService {
     }
     try {
       const result = await this.resend.emails.send({
-        from: this.from,
+        from: from ?? this.from,
         to,
         subject,
         html,
@@ -216,7 +254,7 @@ export class MailService {
     try {
       result = await this.resend.emails.send(
         {
-          from: this.from,
+          from: mail.from ?? this.from,
           to: mail.to,
           subject: mail.subject,
           html: mail.html,
@@ -277,6 +315,49 @@ export class MailService {
       );
     }
     return { id: result.data.id };
+  }
+
+  /** The VOICES links and logo address this mailer uses (VOICES-MAIL, V-44). */
+  getVoicesUrls(): VoicesMailUrls {
+    return this.voicesUrls;
+  }
+
+  /** Send a finished VOICES mail from the VOICES sender (VOICES_MAIL_FROM, else the usual one). */
+  private sendVoices(
+    to: string,
+    mail: VoicesMail,
+    strict = false,
+    logRecipient = true,
+  ): Promise<void> {
+    return this.send(
+      to,
+      mail.subject,
+      mail.html,
+      strict,
+      logRecipient,
+      this.voicesFrom,
+    );
+  }
+
+  /**
+   * The VOICES deletion mails (A10 and A11), for POST /internal/mail/notice
+   * with app "voices". Returns the finished mail for the relay to send.
+   */
+  renderVoicesNotice(
+    kind: 'account_deletion_started' | 'account_deleted',
+    data: { deleteOn?: string },
+    firstName?: string | null,
+  ): { subject: string; html: string; text: string; from?: string } {
+    const mail =
+      kind === 'account_deletion_started'
+        ? voicesDeletionStarted(this.voicesUrls, data.deleteOn ?? '', firstName)
+        : voicesDeleted(this.voicesUrls);
+    return {
+      subject: mail.subject,
+      html: mail.html,
+      text: htmlToText(mail.html),
+      ...(this.voicesFrom ? { from: this.voicesFrom } : {}),
+    };
   }
 
   // ── shared WAWUAfrica layout ────────────────────────────────────────────────
@@ -654,7 +735,14 @@ export class MailService {
    * is the live one and stays: it names the company the person leads, not the
    * product.
    */
-  async sendWelcome(email: string, firstName?: string | null): Promise<void> {
+  async sendWelcome(
+    email: string,
+    firstName?: string | null,
+    app?: MailApp,
+  ): Promise<void> {
+    if (app === 'voices') {
+      return this.sendVoices(email, voicesWelcome(this.voicesUrls, firstName));
+    }
     const body = [
       this.p(
         'You are now part of a community of Africans who refuse to believe that opportunity should be limited by geography, background, or circumstance.',
@@ -760,7 +848,14 @@ export class MailService {
     email: string,
     resetUrl: string,
     firstName?: string | null,
+    app?: MailApp,
   ): Promise<void> {
+    if (app === 'voices') {
+      return this.sendVoices(
+        email,
+        voicesPasswordReset(this.voicesUrls, resetUrl, firstName),
+      );
+    }
     const body = [
       this.p(
         'Forgot your password? You are in good company. Let us get you back into your account. Click the button below to create a new password.',
@@ -822,7 +917,14 @@ export class MailService {
     secureUrl: string,
     firstName?: string | null,
     at: Date = new Date(),
+    app?: MailApp,
   ): Promise<void> {
+    if (app === 'voices') {
+      return this.sendVoices(
+        email,
+        voicesSignInAlert(this.voicesUrls, at, firstName),
+      );
+    }
     const body = [
       this.p(
         'Your Who Made This? account was just signed in to. If this was you, you do not need to do anything.',
@@ -856,7 +958,14 @@ export class MailService {
     secureUrl: string,
     firstName?: string | null,
     at: Date = new Date(),
+    app?: MailApp,
   ): Promise<void> {
+    if (app === 'voices') {
+      return this.sendVoices(
+        email,
+        voicesPasswordChanged(this.voicesUrls, at, firstName),
+      );
+    }
     const body = [
       this.p(
         'The password for your Who Made This? account was changed, and any other device that was signed in has been signed out. If you did this, you do not need to do anything.',
@@ -895,6 +1004,20 @@ export class MailService {
     strict = false,
     options: OtpCodeOptions = {},
   ): Promise<void> {
+    if (options.app === 'voices') {
+      return this.sendVoices(
+        email,
+        voicesVerifyCode(
+          this.voicesUrls,
+          code,
+          options.expiresInMinutes ?? 10,
+          email,
+          options.firstName,
+        ),
+        strict,
+        options.logRecipient ?? true,
+      );
+    }
     const reason = purpose ?? 'complete your verification';
     const minutes = options.expiresInMinutes ?? 10;
     const lives = `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
