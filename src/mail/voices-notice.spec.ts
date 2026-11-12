@@ -95,9 +95,10 @@ describe('VOICES deletion notices', () => {
     expect(seen[0].text).toContain('Undo');
   });
 
-  it('sends the VOICES "deleted" mail to a person who signed up through VOICES with no app named', async () => {
+  it('sends the Who Made This? "deleted" mail to a person who signed up through VOICES when no app is named (12 Nov ruling)', async () => {
     await build('voices').send(dto('account_deleted', {}));
-    expect(seen[0].subject).toBe('Your Voices account has been deleted');
+    expect(seen[0].subject).toBe('Your account has been deleted');
+    expect(seen[0].html).not.toMatch(/usevoices\.com|Voices/);
     expect(seen[0].from).toBe('Who Made This? <noreply@wawuafrica.com>');
   });
 

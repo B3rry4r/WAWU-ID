@@ -83,10 +83,9 @@ export class MailNoticeService {
     });
     // VOICES-MAIL (V-44): the two deletion notices have a VOICES version. A
     // request that names app "voices" gets it (any other kind is refused); a
-    // person who signed up through VOICES gets it for those two kinds only.
+    // stored sign-up app never chooses (12 Nov ruling).
     const voices =
-      mailAppFor(dto.app, user?.signupApp) === 'voices' &&
-      DELETION_KINDS.has(notice.kind);
+      mailAppFor(dto.app) === 'voices' && DELETION_KINDS.has(notice.kind);
     if (dto.app === 'voices' && !DELETION_KINDS.has(notice.kind)) {
       throw new BadRequestException(
         'This notice has no VOICES version. Leave out app.',

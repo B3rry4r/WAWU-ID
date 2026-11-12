@@ -195,16 +195,15 @@ describe('VOICES account mails', () => {
     expect(seen[0].html).toContain('This code expires in 10 minutes');
   });
 
-  it('treats a person who signed up through VOICES as a VOICES person where the request names no app', async () => {
+  it('sends the Who Made This? code mail to a person who signed up through VOICES where the request names no app (12 Nov ruling)', async () => {
     await authFor(
       user({ signupApp: 'voices' }),
       mailer(),
     ).auth.emailVerifyStart('ada@example.test');
-    expect(seen[0].subject).toBe('Confirm your email for Voices');
-    expect(mailAppFor(undefined, 'voices')).toBe('voices');
-    expect(mailAppFor('voices', null)).toBe('voices');
-    expect(mailAppFor(undefined, null)).toBeUndefined();
-    expect(mailAppFor('other', 'voices')).toBeUndefined();
+    expect(seen[0].subject).toBe('Your Who Made This? verification code');
+    expect(mailAppFor('voices')).toBe('voices');
+    expect(mailAppFor(undefined)).toBeUndefined();
+    expect(mailAppFor('other')).toBeUndefined();
   });
 
   it('remembers the sign-up app on register, and only for voices', async () => {
@@ -255,6 +254,19 @@ describe('VOICES account mails', () => {
     expect(seen[0].html).not.toContain('usevoices.com');
   });
 
+  it('sends the Who Made This? reset link to a VOICES sign-up that resets with no app named (12 Nov ruling)', async () => {
+    const row = user({ emailVerified: true, signupApp: 'voices' });
+    await authFor(row, mailer()).auth.forgotPassword(
+      'ada@example.test',
+      'email',
+    );
+    expect(seen[0].html).toContain(
+      'https://wmt.example.test/reset-password?token=',
+    );
+    expect(seen[0].html).not.toContain('usevoices.com');
+    expect(seen[0].subject).not.toMatch(/Voices/);
+  });
+
   it('sends the VOICES password-changed mail after a reset, naming no device or place', async () => {
     const row = user({ emailVerified: true });
     const { auth, prisma } = authFor(row, mailer());
@@ -286,7 +298,7 @@ describe('VOICES account mails', () => {
       id: 'c1',
       codeHash: await argon2.hash('123456'),
     });
-    await auth.emailVerifyConfirm('ada@example.test', '123456');
+    await auth.emailVerifyConfirm('ada@example.test', '123456', 'voices');
     await settle();
     expect(seen[0].subject).toBe('Welcome to Voices, Ada');
     assertVoicesOnly(seen[0]);

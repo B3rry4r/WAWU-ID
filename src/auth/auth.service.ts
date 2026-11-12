@@ -189,7 +189,7 @@ export class AuthService {
     try {
       const to = this.provenEmail(user);
       if (!to) return;
-      const which = mailAppFor(app, user.signupApp);
+      const which = mailAppFor(app);
       void Promise.resolve(
         which
           ? this.mail.sendLoginAlert(
@@ -226,7 +226,7 @@ export class AuthService {
     try {
       const to = this.ownProvenEmail(user);
       if (!to) return;
-      const which = mailAppFor(app, user.signupApp);
+      const which = mailAppFor(app);
       void Promise.resolve(
         which
           ? this.mail.sendPasswordChanged(
@@ -1182,7 +1182,7 @@ export class AuthService {
 
     // VOICES-MAIL (V-44): a VOICES request (or a VOICES person) gets the
     // VOICES code mail, which says what is true: 5 minutes.
-    const which = mailAppFor(app, user.signupApp);
+    const which = mailAppFor(app);
     if (which) {
       await this.mail.sendOtpCode(
         email,
@@ -1237,7 +1237,7 @@ export class AuthService {
     // and "see you inside" is finally true. Guarded on the transition so
     // re-verifying (a second device, a stale tab) does not send it twice.
     if (!wasVerified && updated.email) {
-      const which = mailAppFor(app, updated.signupApp);
+      const which = mailAppFor(app);
       void (which
         ? this.mail.sendWelcome(updated.email, updated.firstName, which)
         : this.mail.sendWelcome(updated.email, updated.firstName));
@@ -1294,7 +1294,7 @@ export class AuthService {
 
         // VOICES-MAIL (V-44): a VOICES person's link opens usevoices.com,
         // never the Who Made This? site.
-        const which = mailAppFor(app, user.signupApp);
+        const which = mailAppFor(app);
         const appUrl = which
           ? this.mail.getVoicesUrls().app
           : appBaseUrl(this.config);

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Logger } from '@nestjs/common';
 import { NOTICE_SAMPLES } from '../testing/notice-samples';
 import { MailService } from './mail.service';
+import type { MoneyCheckReportMail } from './money-check-report';
 import { NOTICE_KINDS, parseNotice } from './notice/notice-kinds';
 import { noticeContent } from './notice/notice-words';
 
@@ -85,6 +86,59 @@ describe('Who Made This? mails are unchanged', () => {
       .update(JSON.stringify([s.from, s.to, s.subject, s.html, s.text ?? null]))
       .digest('hex');
 
+  const REPORT: MoneyCheckReportMail = {
+    night: '2026-11-11',
+    provider: 'fintava',
+    verdict: 'differences',
+    ranAt: '2026-11-12T01:00:00.000Z',
+    walletsTotal: 12,
+    walletsChecked: 11,
+    mismatchCount: 1,
+    lookCount: 1,
+    checks: [
+      {
+        id: 'balances',
+        state: 'differences',
+        checked: 11,
+        found: 1,
+        note: null,
+      },
+      {
+        id: 'holds',
+        state: 'needs_a_look',
+        checked: 4,
+        found: 1,
+        note: 'One hold is older than usual.',
+      },
+    ],
+    held: {
+      openCount: 4,
+      openKobo: '2500000',
+      requiredKobo: '2500000',
+      merchantAvailableKobo: '2400000',
+    },
+    items: [
+      {
+        check: 'balances',
+        severity: 'mismatch',
+        kind: 'balance',
+        ref: 'w_1',
+        detail: 'Ledger and provider differ',
+        amountKobo: '100000',
+        otherKobo: '90000',
+      },
+      {
+        check: 'holds',
+        severity: 'look',
+        kind: 'hold',
+        ref: 'h_9',
+        detail: 'Hold is old',
+      },
+    ],
+    itemsOmitted: 2,
+    notices: { late_webhook: { count: 3, amountKobo: '5000' } },
+  };
+
   async function renderAll(): Promise<Record<string, string>> {
     const m = new MailService({
       get: (name: string) =>
@@ -153,6 +207,31 @@ describe('Who Made This? mails are unchanged', () => {
       [
         'ditto',
         () => m.sendDittoDistributionInvite('a@example.test', 'Ada', url, 10),
+      ],
+      [
+        'money check report',
+        () => m.sendMoneyCheckReport('a@example.test', 'Ada', REPORT),
+      ],
+      [
+        'relayed',
+        async () => {
+          await m.sendRelayed({
+            to: 'a@example.test',
+            subject: 'Campaign subject',
+            html: '<p>Hello</p>',
+            text: 'Hello',
+            headers: { 'List-Unsubscribe': '<https://wawuafrica.com/u>' },
+            tag: 'camp_1',
+            idempotencyKey: 'idem-1',
+            attachments: [
+              {
+                filename: 'a.txt',
+                content: Buffer.from('hi').toString('base64'),
+                contentType: 'text/plain',
+              },
+            ],
+          });
+        },
       ],
     ];
     const out: Record<string, string> = {};
