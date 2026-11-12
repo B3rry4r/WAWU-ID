@@ -1,5 +1,6 @@
 import {
   BadGatewayException,
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -8,6 +9,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { MailNoticeDto } from './dto/mail-notice.dto';
 import { MailRelayError, MailService } from './mail.service';
+import { mailAppFor } from './voices/mail-app';
 import { parseNotice, type NoticeKind } from './notice/notice-kinds';
 import { noticeContent } from './notice/notice-words';
 import { ownProvenEmail, provenEmail } from './proven-email';
@@ -76,8 +78,20 @@ export class MailNoticeService {
         phoneVerifiedAt: true,
         status: true,
         deletedAt: true,
+        signupApp: true,
       },
     });
+    // VOICES-MAIL (V-44): the two deletion notices have a VOICES version. A
+    // request that names app "voices" gets it (any other kind is refused); a
+    // person who signed up through VOICES gets it for those two kinds only.
+    const voices =
+      mailAppFor(dto.app, user?.signupApp) === 'voices' &&
+      DELETION_KINDS.has(notice.kind);
+    if (dto.app === 'voices' && !DELETION_KINDS.has(notice.kind)) {
+      throw new BadRequestException(
+        'This notice has no VOICES version. Leave out app.',
+      );
+    }
     const to = user
       ? DELETION_KINDS.has(notice.kind)
         ? ownProvenEmail(user)
@@ -89,15 +103,28 @@ export class MailNoticeService {
       return { sent: false, replayed: true };
     }
 
-    const content = noticeContent(notice);
-    const { html, text } = this.mail.renderNotice(content, user.firstName);
+    let ready: { subject: string; html: string; text: string; from?: string };
+    if (voices) {
+      ready = this.mail.renderVoicesNotice(
+        notice.kind as 'account_deletion_started' | 'account_deleted',
+        notice.data as { deleteOn?: string },
+        user.firstName,
+      );
+    } else {
+      const content = noticeContent(notice);
+      ready = {
+        subject: content.subject,
+        ...this.mail.renderNotice(content, user.firstName),
+      };
+    }
     let providerId: string;
     try {
       ({ id: providerId } = await this.mail.sendRelayed({
         to,
-        subject: content.subject,
-        html,
-        text,
+        subject: ready.subject,
+        html: ready.html,
+        text: ready.text,
+        ...(ready.from ? { from: ready.from } : {}),
         idempotencyKey: `notice-${dto.idempotencyKey}`,
       }));
     } catch (err) {

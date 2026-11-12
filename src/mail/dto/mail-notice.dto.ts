@@ -1,10 +1,13 @@
 import {
+  IsIn,
   IsObject,
+  IsOptional,
   IsString,
   IsUUID,
   Matches,
   MaxLength,
 } from 'class-validator';
+import { MAIL_APPS, type MailApp } from '../voices/mail-app';
 
 /**
  * The body of POST /internal/mail/notice (EMAIL-01). The Hub names the person
@@ -26,6 +29,16 @@ export class MailNoticeDto {
 
   @IsObject()
   data!: Record<string, unknown>;
+
+  /**
+   * "voices" asks for the VOICES version of an account notice (only
+   * account_deletion_started and account_deleted have one). Without it the
+   * mail is the person's own product's: VOICES for someone who signed up
+   * through VOICES, else Who Made This?, as before.
+   */
+  @IsOptional()
+  @IsIn(MAIL_APPS)
+  app?: MailApp;
 
   /** 8 to 128 letters, numbers, dash and underscore: the Hub's own id of this send. */
   @IsString()

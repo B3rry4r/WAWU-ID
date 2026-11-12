@@ -7,6 +7,9 @@
     "assets": [
       {
         "include": "mail/assets/*.png"
+      },
+      {
+        "include": "mail/assets/voices/*.png"
       }
     ]
   }

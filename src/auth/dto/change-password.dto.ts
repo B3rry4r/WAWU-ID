@@ -1,5 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsIn,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+import { MAIL_APPS, type MailApp } from '../../mail/voices/mail-app';
 
 export class ChangePasswordDto {
   @ApiProperty({ description: 'The password the account has now.' })
@@ -17,4 +24,11 @@ export class ChangePasswordDto {
   @MinLength(8)
   @MaxLength(128)
   newPassword!: string;
+
+  // VOICES-MAIL (V-44): "voices" makes the account mails this request causes
+  // VOICES mails (look, words, links). Anything else, or nothing, leaves them
+  // as they were.
+  @IsOptional()
+  @IsIn(MAIL_APPS)
+  app?: MailApp;
 }

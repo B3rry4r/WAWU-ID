@@ -298,7 +298,7 @@ export class AuthController {
       dto.newPassword,
     );
     // Only a change that went through is told (EMAIL-01).
-    this.auth.notifyPasswordChanged(user);
+    this.auth.notifyPasswordChanged(user, dto.app);
     return { data: pair };
   }
 
@@ -317,14 +317,14 @@ export class AuthController {
   @Post('email/verify/start')
   @HttpCode(HttpStatus.OK)
   async emailVerifyStart(@Body() dto: EmailVerifyStartDto) {
-    return { data: await this.auth.emailVerifyStart(dto.email) };
+    return { data: await this.auth.emailVerifyStart(dto.email, dto.app) };
   }
 
   @Post('email/verify/confirm')
   @HttpCode(HttpStatus.OK)
   async emailVerifyConfirm(@Body() dto: EmailVerifyConfirmDto) {
     return {
-      data: await this.auth.emailVerifyConfirm(dto.email, dto.code),
+      data: await this.auth.emailVerifyConfirm(dto.email, dto.code, dto.app),
     };
   }
 
@@ -352,7 +352,7 @@ export class AuthController {
   })
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     return {
-      data: await this.auth.forgotPassword(dto.identifier, dto.method),
+      data: await this.auth.forgotPassword(dto.identifier, dto.method, dto.app),
     };
   }
 

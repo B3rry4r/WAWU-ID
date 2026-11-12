@@ -138,6 +138,13 @@ model WawuUser {
   /// deletion brings the account back, not the sessions that were revoked.
   sessionsRevokedAt DateTime?       @map("sessions_revoked_at")
 
+  /// VOICES-MAIL (V-44). Which product the person signed up through: 'voices'
+  /// when POST /auth/register was sent with app "voices". NULL for everyone
+  /// else, which means Who Made This? (every row that existed before this
+  /// column). It only chooses the look and links of an account mail when a
+  /// request does not name an app; it never gates a sign-in.
+  signupApp     String?             @map("signup_app") @db.VarChar(16)
+
   createdAt     DateTime            @default(now()) @map("created_at")
   updatedAt     DateTime            @updatedAt @map("updated_at")
   refreshTokens    RefreshToken[]
