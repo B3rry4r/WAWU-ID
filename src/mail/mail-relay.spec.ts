@@ -45,6 +45,7 @@ describe('POST /internal/mail/send', () => {
     'RESEND_BASE_URL',
     'MAIL_FROM',
     'MAIL_RELAY_DAILY_CAP',
+    'VOICES_MAIL_FROM',
   ];
 
   async function makeApp(): Promise<INestApplication> {
@@ -112,6 +113,7 @@ describe('POST /internal/mail/send', () => {
     process.env.MAIL_FROM = MAIL_FROM;
     process.env.RESEND_API_KEY = 're_test_local_stand_in';
     delete process.env.MAIL_RELAY_DAILY_CAP;
+    delete process.env.VOICES_MAIL_FROM;
   });
 
   beforeEach(() => {
@@ -312,6 +314,124 @@ describe('POST /internal/mail/send', () => {
       expect(mailRelayDailyCap(get('lots'))).toBe(5000);
       expect(mailRelayDailyCap(get('-3'))).toBe(5000);
       expect(mailRelayDailyCap(get('120'))).toBe(120);
+    });
+  });
+
+  describe('the app field (EMAIL-RELAY)', () => {
+    const VOICES_FROM = 'Voices <hello@voices.test.invalid>';
+
+    it('sends app voices from VOICES_MAIL_FROM', async () => {
+      process.env.VOICES_MAIL_FROM = VOICES_FROM;
+      try {
+        const app = await makeApp();
+        await post(app, { ...BODY, app: 'voices' }).expect(200);
+        expect(seen[0].body.from).toBe(VOICES_FROM);
+      } finally {
+        delete process.env.VOICES_MAIL_FROM;
+      }
+    });
+
+    it('falls back to MAIL_FROM for app voices while VOICES_MAIL_FROM is unset', async () => {
+      const app = await makeApp();
+      await post(app, { ...BODY, app: 'voices' }).expect(200);
+      expect(seen[0].body.from).toBe(MAIL_FROM);
+    });
+
+    it('with no app sends from MAIL_FROM even when VOICES_MAIL_FROM is set', async () => {
+      process.env.VOICES_MAIL_FROM = VOICES_FROM;
+      try {
+        const app = await makeApp();
+        await post(app).expect(200);
+        expect(seen[0].body.from).toBe(MAIL_FROM);
+      } finally {
+        delete process.env.VOICES_MAIL_FROM;
+      }
+    });
+
+    it.each(['wmt', 'nope', '', 7, null])(
+      'refuses an unknown app (%p) with a 400 and sends nothing',
+      async (value) => {
+        const app = await makeApp();
+        await post(app, { ...BODY, app: value }).expect(400);
+        expect(seen).toHaveLength(0);
+      },
+    );
+  });
+
+  describe('429 codes (EMAIL-RELAY)', () => {
+    it('answers the provider daily quota as 429 with code provider_daily_quota', async () => {
+      const app = await makeApp();
+      script = [{ status: 429, name: 'daily_quota_exceeded' }];
+      const res = await post(app).expect(429);
+      expect(res.body).toEqual({
+        statusCode: 429,
+        code: 'provider_daily_quota',
+        message:
+          'The email provider has reached its daily limit. Try again tomorrow.',
+      });
+    });
+
+    it('answers the provider monthly quota as 429 with code provider_monthly_quota', async () => {
+      const app = await makeApp();
+      script = [{ status: 429, name: 'monthly_quota_exceeded' }];
+      const res = await post(app).expect(429);
+      expect(res.body).toEqual({
+        statusCode: 429,
+        code: 'provider_monthly_quota',
+        message: 'The email provider has reached its monthly limit.',
+      });
+    });
+
+    it('answers its own cap as 429 with code daily_cap', async () => {
+      process.env.MAIL_RELAY_DAILY_CAP = '1';
+      try {
+        const app = await makeApp();
+        await post(app).expect(200);
+        const res = await post(app).expect(429);
+        expect(res.body).toEqual({
+          statusCode: 429,
+          code: 'daily_cap',
+          message:
+            'The daily email limit has been reached. Try again tomorrow.',
+        });
+      } finally {
+        delete process.env.MAIL_RELAY_DAILY_CAP;
+      }
+    });
+
+    it('keeps rate_limit_exceeded as a 503 with no 429 code', async () => {
+      const app = await makeApp();
+      script = [{ status: 429, name: 'rate_limit_exceeded' }];
+      const res = await post(app).expect(503);
+      expect((res.body as { code?: string }).code).toBeUndefined();
+    });
+
+    it('gives the cap place back when the provider refuses on a quota', async () => {
+      process.env.MAIL_RELAY_DAILY_CAP = '1';
+      try {
+        const app = await makeApp();
+        script = [
+          { status: 429, name: 'daily_quota_exceeded' },
+          { status: 429, name: 'monthly_quota_exceeded' },
+        ];
+        // Had the places not come back, the second call would be daily_cap.
+        const a = await post(app).expect(429);
+        const b = await post(app).expect(429);
+        expect((a.body as { code: string }).code).toBe('provider_daily_quota');
+        expect((b.body as { code: string }).code).toBe(
+          'provider_monthly_quota',
+        );
+        await post(app).expect(200);
+      } finally {
+        delete process.env.MAIL_RELAY_DAILY_CAP;
+      }
+    });
+
+    it('carries no dash characters in the 429 words', async () => {
+      const app = await makeApp();
+      script = [{ status: 429, name: 'daily_quota_exceeded' }];
+      const res = await post(app).expect(429);
+      expect(JSON.stringify(res.body)).not.toMatch(/[\u2013\u2014]/);
     });
   });
 });

@@ -105,7 +105,9 @@ export type MailRelayFailure =
   | 'not_configured'
   | 'invalid_address'
   | 'unavailable'
-  | 'refused';
+  | 'refused'
+  | 'provider_daily_quota'
+  | 'provider_monthly_quota';
 
 export class MailRelayError extends Error {
   constructor(
@@ -125,6 +127,8 @@ export interface RelayedMail {
   headers?: Record<string, string>;
   /** Only WAWU ID's own code sets this (the VOICES sender); a caller of the relay cannot. */
   from?: string;
+  /** EMAIL-RELAY: the product the mail is for; `voices` picks the VOICES sender. */
+  app?: MailApp;
   /** Kept on the provider's record of the mail (the campaign id). */
   tag?: string;
   /** Same key on a retry: the provider answers with the first result. */
@@ -254,7 +258,7 @@ export class MailService {
     try {
       result = await this.resend.emails.send(
         {
-          from: mail.from ?? this.from,
+          from: mail.from ?? this.senderFor(mail.app),
           to: mail.to,
           subject: mail.subject,
           html: mail.html,
@@ -288,6 +292,20 @@ export class MailService {
     if (result.error) {
       const { statusCode, name } = result.error;
       const detail = result.error.message.slice(0, 200);
+      // EMAIL-RELAY: the provider's own quotas are not "busy, try again in a
+      // second"; the caller must stop and wait for the day or the month.
+      if (name === 'daily_quota_exceeded') {
+        throw new MailRelayError(
+          'provider_daily_quota',
+          'The email provider has reached its daily limit. Try again tomorrow.',
+        );
+      }
+      if (name === 'monthly_quota_exceeded') {
+        throw new MailRelayError(
+          'provider_monthly_quota',
+          'The email provider has reached its monthly limit.',
+        );
+      }
       if (statusCode === null || statusCode === 429 || statusCode >= 500) {
         throw new MailRelayError(
           'unavailable',
@@ -315,6 +333,11 @@ export class MailService {
       );
     }
     return { id: result.data.id };
+  }
+
+  /** The From line for a relayed mail: VOICES_MAIL_FROM for `voices` (else MAIL_FROM), MAIL_FROM for no app. */
+  private senderFor(app: MailApp | undefined): string {
+    return app === 'voices' ? (this.voicesFrom ?? this.from) : this.from;
   }
 
   /** The VOICES links and logo address this mailer uses (VOICES-MAIL, V-44). */
