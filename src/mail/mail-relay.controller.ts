@@ -22,13 +22,14 @@ export class MailRelayController {
 
   /**
    * POST /internal/mail/send
-   * Body: { to, subject, html, text, headers?, tag?, attachments? }
+   * Body: { to, subject, html, text, headers?, tag?, attachments?, app? }
    * Optional header: Idempotency-Key (the same key answers with the first mail).
    *
    * 200 { id } sent, or { id, attachments } when the body had an attachments
    * list, `attachments` being how many files were handed to the sender (the
    * caller compares it with what it sent) | 400 bad body or address | 401 no
-   * key | 429 daily cap |
+   * key | 429 { code: daily_cap | provider_daily_quota |
+   * provider_monthly_quota } |
    * 502 the provider refused | 503 try again (busy, unreachable, or no email
    * key set on this service).
    */

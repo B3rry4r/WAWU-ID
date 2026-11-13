@@ -17,6 +17,7 @@ import {
   RELAY_ATTACHMENT_MAX_COUNT,
   RELAY_ATTACHMENT_TYPES,
 } from '../mail-relay.config';
+import { MAIL_APPS, type MailApp } from '../voices/mail-app';
 
 /**
  * One file on a relayed mail (WALLET-35). The name is a plain file name (no
@@ -77,6 +78,16 @@ export class SendMailDto {
   @IsObject()
   @Type(() => Object)
   headers?: Record<string, unknown>;
+
+  /**
+   * EMAIL-RELAY: `voices` sends from WAWU ID's VOICES_MAIL_FROM (MAIL_FROM when
+   * that is unset). Left out is today's behaviour exactly. Any other value,
+   * null included, is a 400 (a caller that means voices and sends null has a
+   * bug; sending it as a Who Made This? mail would be the wrong mail). It picks one of two senders WAWU ID owns; it never names an address.
+   */
+  @ValidateIf((o: SendMailDto) => o.app !== undefined)
+  @IsIn(MAIL_APPS)
+  app?: MailApp;
 
   /** The campaign id, kept on the provider's record of the mail. */
   @IsOptional()

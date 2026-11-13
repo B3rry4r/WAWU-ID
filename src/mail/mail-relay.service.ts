@@ -21,7 +21,9 @@ import { MailRelayError, MailService } from './mail.service';
  * Resend mailer for a sibling service, so the Hub needs no email key of its
  * own. Checks the header allowlist and the daily cap, then maps the mailer's
  * failure kinds to the answers the caller acts on: 503 retry, 400 bad
- * address, 429 cap reached, 502 the provider refused.
+ * address, 429 with a `code` (daily_cap, provider_daily_quota or
+ * provider_monthly_quota: stop and wait, never retry in a second), 502 the
+ * provider refused.
  */
 @Injectable()
 export class MailRelayService {
@@ -45,7 +47,7 @@ export class MailRelayService {
           statusCode: HttpStatus.TOO_MANY_REQUESTS,
           message:
             'The daily email limit has been reached. Try again tomorrow.',
-          code: 'MAIL_DAILY_CAP',
+          code: 'daily_cap',
         },
         HttpStatus.TOO_MANY_REQUESTS,
       );
@@ -58,6 +60,7 @@ export class MailRelayService {
         text: dto.text,
         headers,
         tag: dto.tag,
+        app: dto.app,
         attachments: dto.attachments,
         idempotencyKey: idempotencyKey?.slice(0, 256) || undefined,
       });
@@ -74,6 +77,17 @@ export class MailRelayService {
       switch (e.kind) {
         case 'invalid_address':
           throw new BadRequestException(e.message);
+        case 'provider_daily_quota':
+        case 'provider_monthly_quota':
+          // The cap place was given back above, like any mail not sent.
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.TOO_MANY_REQUESTS,
+              code: e.kind,
+              message: e.message,
+            },
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
         case 'refused':
           throw new BadGatewayException(e.message);
         default:
