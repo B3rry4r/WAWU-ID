@@ -5,7 +5,7 @@ import request from 'supertest';
 import { HttpExceptionFilter } from '../common/http-exception.filter';
 import { PrismaModule } from '../prisma/prisma.module';
 import { PrismaService } from '../prisma/prisma.service';
-import { MailModule } from './mail.module';
+import { MailNoticeModule } from './mail-notice.module';
 
 /**
  * EMAIL-ID-AUD: GET /internal/mail/audience against a real local Postgres (a
@@ -40,7 +40,7 @@ dbCases('GET /internal/mail/audience', () => {
       imports: [
         ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true }),
         PrismaModule,
-        MailModule,
+        MailNoticeModule,
       ],
     }).compile();
     const a = mod.createNestApplication();
