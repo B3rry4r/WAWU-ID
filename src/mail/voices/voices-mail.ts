@@ -155,7 +155,7 @@ ${s.body}
 <p class="mt" style="margin:0 0 12px;font-size:12px;line-height:19px;color:#51605A">You are getting this because someone used this address on Voices. This email is not optional, because it keeps your account and community safe.</p>
 <p class="mt" style="margin:0 0 12px;font-size:12px;line-height:19px;color:#51605A">
 <a href="${esc(legal)}/rules" class="gt" style="color:#087A4C">Community rules</a> &nbsp;&middot;&nbsp; <a href="${esc(legal)}/privacy" class="gt" style="color:#087A4C">Privacy</a> &nbsp;&middot;&nbsp; <a href="${esc(legal)}/terms" class="gt" style="color:#087A4C">Terms</a></p>
-<p class="mt" style="margin:0;font-size:12px;line-height:19px;color:#51605A">Voices by WAWU Technology Ltd<br>Voices is a place for real conversation. Strong opinions are welcome. Harassment and threats are not.</p>
+<p class="mt" style="margin:0;font-size:12px;line-height:19px;color:#51605A">Voices by WAWU<br>Voices is a place for real conversation. Strong opinions are welcome. Harassment and threats are not.</p>
 </td></tr>
 </table></td></tr></table>
 </body>
