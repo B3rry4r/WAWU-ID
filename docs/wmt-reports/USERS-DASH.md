@@ -54,3 +54,24 @@ Email and phone are unique, so a whole-email or whole-phone match is an index lo
 - The default spec uses an in-memory stand-in for the table (so it runs with no database); it is only as good as that stand-in. The real-database run above is the check on the actual SQL, and it is not part of CI.
 - Timings are from a scratch machine and synthetic rows (short names), not the live table.
 - "first last" with more than 8 spaces in `q` is only tried at the first 8 spaces.
+
+## Fix round 1
+Code head `851c99a` on `wmt/USERS-DASH` (this report is committed after it). Source diff of the round without specs: +73 / -13 lines in 3 files (`users-list.ts` +49/-12, `phone.util.ts` +15, `auth.service.ts` +9/-1). Whole feature without specs against `origin/main`: 361 added lines in 4 files.
+
+1. **Phone in a local or bare international form (MEDIUM).**
+   - `src/common/phone.util.ts:194` `callingCodes()`: every calling code of `COUNTRY_CODES` that the phone library supports, once each (207 candidates for one local number). It is derived from the one country list; no second list.
+   - `src/auth/users-list.ts:177` `phoneCandidates()`: besides the old Nigerian variants, a digits-only `q` also tries `+<digits>` (bare international) and, if it starts with 0, `+<dial><rest>` for every calling code.
+   - `src/auth/users-list.ts:199-208` `looksLikePhone()`: a `q` of only digits and phone marks (`+ ( ) - .` and spaces) with 7 to 15 digits is searched as the phone only, one exact `phone in (...)`. This is a choice I made so it stays an index lookup: without it the name branch forces a table scan. Cost: a name made only of digits is no longer found by `q`. Other `q` text still searches name, email and phone as before.
+   - EXPLAIN on 100,000 users, `07911 123456` (207 candidates): `Index Scan using wawu_users_phone_key`, 0.65 ms.
+   - Specs: UK in 7 forms, Ghana in 6 forms, Nigerian in 8 forms, partial numbers still find nothing.
+2. **NUL in `q` (LOW).** `users-list.ts:125`: 400 with fixed text. Spec with three NUL shapes.
+3. **Failure log (LOW).** `auth.service.ts:672` and `:699`: one fixed line, `users/list: database call failed (<ErrorClassName>)`, nothing else. Spec: three failing requests (q with an email, q with a phone, ids) give exactly three lines, each exactly that text, none with the email, phone or id.
+4. **Lead ruling: banned and pending_deletion are returned.** `users-list.ts:161` `OPEN_ACCOUNT_WHERE` renamed `NOT_DELETED_WHERE`, now only `deletedAt = null` and phone not `deleted:...`. What an admin sees now, in the list and by `ids`:
+   - active, suspended, banned, pending_deletion: returned, same nine fields (no `status` field, so the Hub cannot tell them apart from this route).
+   - deleted (`deletedAt` set, or `deleted:<id>` phone): left out.
+   - `released:<id>` phone: returned, phone `""`.
+   Specs changed to match (the old "left out" expectations for banned and pending_deletion were rewritten, as the ruling asks).
+
+Runs: `tsc` clean; eslint (no `--fix`) clean on the five touched source files; new spec 3 times in a row 33/33, 33/33, 33/33, and 33/33 on real Postgres 16; the five controller specs plus `src/common`: 8 suites, 245/245; gates `run.py` 0 fail (48 warn, as before), `check_baseline.py` ok. I did not run the whole suite or `npm run build` this round.
+
+Not proven: the 100,000-row EXPLAIN is a scratch table; finding 2 (key versus body parser) left as ruled.
