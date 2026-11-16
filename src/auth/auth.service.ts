@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -668,6 +669,8 @@ export class AuthService {
    * call is wrapped so that a failure is answered with fixed text: a Prisma
    * error can carry the query it was given, and that is the caller's `q`.
    */
+  private readonly listLog = new Logger('UsersList');
+
   async listUsers(body: unknown): Promise<ListUsersResult> {
     const req = parseListBody(body);
     try {
@@ -690,7 +693,12 @@ export class AuthService {
         items: page.map(toListed),
         nextCursor: rows.length > req.limit && last ? encodeCursor(last) : null,
       };
-    } catch {
+    } catch (err) {
+      // One fixed line: the error's class name only. Never the query, the q or
+      // the ids, which a database error can carry in its message.
+      this.listLog.error(
+        `users/list: database call failed (${err instanceof Error ? err.constructor.name : typeof err})`,
+      );
       throw new InternalServerErrorException('Could not list users.');
     }
   }

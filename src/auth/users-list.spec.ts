@@ -247,7 +247,7 @@ describe('POST /internal/users/list', () => {
     beforeAll(async () => {
       a = await add({ firstName: 'Ids', lastName: 'Alpha' });
       b = await add({ firstName: 'Ids', lastName: 'Beta' });
-      gone = await add({ status: 'pending_deletion', deletedAt: new Date(t0) });
+      gone = await add({ deletedAt: new Date(t0) });
     });
 
     it('returns the ones that exist, and nextCursor is null', async () => {
@@ -495,6 +495,88 @@ describe('POST /internal/users/list', () => {
       spies.forEach((s) => s.mockRestore());
     });
 
+    it('finds a UK number in every form it is written', async () => {
+      const uk = await add({ firstName: 'Ukphone', phone: '+447911123456' });
+      for (const q of [
+        '+447911123456',
+        '+44 7911 123456',
+        '07911 123456',
+        '07911123456',
+        '447911123456',
+        '44 7911 123456',
+        '00447911123456',
+      ]) {
+        expect(idsOf(await list({ q }))).toEqual([uk]);
+      }
+      expect(idsOf(await list({ q: '07911 1234' }))).toEqual([]);
+    });
+
+    it('finds a Ghana number in every form it is written', async () => {
+      const gh = await add({ firstName: 'Ghphone', phone: '+233241234567' });
+      for (const q of [
+        '+233241234567',
+        '+233 24 123 4567',
+        '024 123 4567',
+        '0241234567',
+        '233241234567',
+        '(024) 123-4567',
+      ]) {
+        expect(idsOf(await list({ q }))).toEqual([gh]);
+      }
+      expect(idsOf(await list({ q: '0241234' }))).toEqual([]);
+    });
+
+    it('still finds a Nigerian number in every form', async () => {
+      for (const q of [
+        '08031234412',
+        '0803 123 4412',
+        '+2348031234412',
+        '2348031234412',
+        '+234-803-123-4412',
+        '(0803) 123-4412',
+        '002348031234412',
+        '8031234412',
+      ]) {
+        expect(idsOf(await list({ q }))).toEqual([ada]);
+      }
+    });
+
+    it('refuses a q with a NUL character, as 400', async () => {
+      for (const q of ['a\u0000bc', '\u0000\u0000', 'abc\u0000']) {
+        const res = await list({ q });
+        expect(res.status).toBe(400);
+        expect(JSON.stringify(bodyOf(res))).not.toContain('abc');
+      }
+    });
+
+    it('logs one fixed line when the database fails, with nothing personal', async () => {
+      if (real) return;
+      const spies = (['log', 'warn', 'error', 'debug', 'verbose'] as const).map(
+        (m) =>
+          jest.spyOn(Logger.prototype, m).mockImplementation(() => undefined),
+      );
+      const mail = 'zq-secret-needle@example.test';
+      class PrismaClientKnownRequestError extends Error {}
+      failWith = new PrismaClientKnownRequestError(
+        `bad query for ${mail} +2348031234412 ${uuid(1)}`,
+      );
+      for (const body of [
+        { q: mail },
+        { q: '0803 123 4412' },
+        { ids: [uuid(1)] },
+      ]) {
+        expect((await list(body)).status).toBe(500);
+      }
+      const calls = spies.flatMap((s) => s.mock.calls);
+      expect(calls).toHaveLength(3);
+      for (const c of calls) {
+        expect(c).toEqual([
+          'users/list: database call failed (PrismaClientKnownRequestError)',
+        ]);
+      }
+      spies.forEach((s) => s.mockRestore());
+    });
+
     it('reports the account as it is held', async () => {
       const res = await list({ q: 'Adaeze' });
       expect(bodyOf(res).items).toEqual([
@@ -514,7 +596,7 @@ describe('POST /internal/users/list', () => {
   });
 
   describe('accounts that are gone', () => {
-    it('leaves out deleted and closed accounts, in a page, a search and by id', async () => {
+    it('leaves out deleted accounts only; banned and pending_deletion are returned', async () => {
       const live = await add({ firstName: 'Gonetest', lastName: 'Live' });
       const pend = await add({
         firstName: 'Gonetest',
@@ -530,13 +612,15 @@ describe('POST /internal/users/list', () => {
         phone: 'deleted:abc',
         email: null,
       });
-      expect(idsOf(await list({ q: 'Gonetest' }))).toEqual([live]);
+      // newest first: banned, pend, live
+      expect(idsOf(await list({ q: 'Gonetest' }))).toEqual([
+        banned,
+        pend,
+        live,
+      ]);
       expect(
-        idsOf(await list({ ids: [live, pend, stamped, banned, wiped] })),
-      ).toEqual([live]);
-      const all = await list({ limit: 100 });
-      for (const g of [pend, stamped, banned, wiped])
-        expect(idsOf(all)).not.toContain(g);
+        idsOf(await list({ ids: [live, pend, stamped, banned, wiped] })).sort(),
+      ).toEqual([live, pend, banned].sort());
     });
 
     it('keeps an account whose phone was released, with an empty phone', async () => {

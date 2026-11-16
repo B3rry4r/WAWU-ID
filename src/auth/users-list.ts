@@ -1,6 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
-import { comparablePhone, phoneVariants } from '../common/phone.util';
+import {
+  callingCodes,
+  comparablePhone,
+  phoneVariants,
+} from '../common/phone.util';
 import { phoneIsProven } from './phone-proof';
 import { DELETED_PHONE_PREFIX, isStoredPhone } from './released-phone';
 
@@ -118,6 +122,7 @@ export function parseListBody(body: unknown): ListRequest {
   let q: string | null = null;
   if (b.q !== undefined && b.q !== null) {
     if (typeof b.q !== 'string') bad('q must be text.');
+    if (b.q.includes('\u0000')) bad('q must be text.');
     const t = b.q.trim();
     if (t.length < Q_MIN) bad(`q must be at least ${Q_MIN} characters.`);
     if (t.length > Q_MAX) bad(`q must be at most ${Q_MAX} characters.`);
@@ -147,13 +152,13 @@ export function parseListBody(body: unknown): ListRequest {
 }
 
 /**
- * Accounts that are gone are left out, by the same four marks
- * `isClosedAccount` (closed-account.ts) reads: banned, pending_deletion, a
- * `deletedAt` stamp, or the `deleted:<id>` phone marker. Written as a where
- * clause so the database does the leaving out.
+ * Only DELETED accounts are left out: a `deletedAt` stamp, or the
+ * `deleted:<id>` phone marker the anonymise step writes. Banned and
+ * pending_deletion accounts are returned (an admin has to be able to find them,
+ * and a pending deletion can still be cancelled). Written as a where clause so
+ * the database does the leaving out.
  */
-export const OPEN_ACCOUNT_WHERE: Prisma.WawuUserWhereInput = {
-  status: { notIn: ['banned', 'pending_deletion'] },
+export const NOT_DELETED_WHERE: Prisma.WawuUserWhereInput = {
   deletedAt: null,
   NOT: { phone: { startsWith: DELETED_PHONE_PREFIX } },
 };
@@ -168,7 +173,39 @@ export function plain(text: string): string {
 }
 
 /** The `q` match: name part, "first last" part, whole email, or whole phone. */
+/** Every stored spelling a whole phone number typed as `q` could have. */
+export function phoneCandidates(q: string): string[] {
+  const out = new Set<string>();
+  const phone = comparablePhone(q);
+  if (phone) for (const v of phoneVariants(phone)) out.add(v);
+  const digits = q.replace(/[\s\-().]/g, '');
+  if (/^\d{7,15}$/.test(digits)) {
+    // `447911123456`: the international form written without its `+`.
+    out.add(`+${digits}`);
+    // `07911 123456`, `0241234567`: the local form, any supported country.
+    if (digits.startsWith('0')) {
+      for (const dial of callingCodes()) out.add(`+${dial}${digits.slice(1)}`);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * A `q` made only of digits and the marks people put in a phone number, with 7
+ * to 15 digits, is a phone number: it is searched as one exact `phone in (...)`
+ * (the unique index) and not also as a name, which would force a table scan. A
+ * name made only of digits is not a thing.
+ */
+function looksLikePhone(q: string): boolean {
+  if (!/^\+?[\d\s\-().]+$/.test(q)) return false;
+  const n = q.replace(/\D/g, '').length;
+  return n >= 7 && n <= 15;
+}
+
 export function searchWhere(q: string): Prisma.WawuUserWhereInput {
+  if (looksLikePhone(q)) {
+    return { phone: { in: phoneCandidates(q) } };
+  }
   const ci = 'insensitive' as const;
   const or: Prisma.WawuUserWhereInput[] = [
     { firstName: { contains: plain(q), mode: ci } },
@@ -191,9 +228,9 @@ export function searchWhere(q: string): Prisma.WawuUserWhereInput {
     at = q.indexOf(' ', at + 1);
   }
 
-  // The whole phone number, written any usual way.
-  const phone = comparablePhone(q);
-  if (phone) or.push({ phone: { in: phoneVariants(phone) } });
+  // A short run of digits, or a mixed text that still reads as a phone.
+  const phones = phoneCandidates(q);
+  if (phones.length > 0) or.push({ phone: { in: phones } });
 
   return { OR: or };
 }
@@ -201,7 +238,7 @@ export function searchWhere(q: string): Prisma.WawuUserWhereInput {
 export function pageWhere(
   req: Extract<ListRequest, { kind: 'page' }>,
 ): Prisma.WawuUserWhereInput {
-  const and: Prisma.WawuUserWhereInput[] = [{ ...OPEN_ACCOUNT_WHERE }];
+  const and: Prisma.WawuUserWhereInput[] = [{ ...NOT_DELETED_WHERE }];
   if (req.q) and.push(searchWhere(req.q));
   if (req.cursor) {
     and.push({
@@ -218,7 +255,7 @@ export function idsWhere(ids: string[]): Prisma.WawuUserWhereInput {
   // A string that is not a uuid cannot be an id here, so it is simply not found
   // (and never reaches the uuid column).
   const valid = ids.filter((id) => UUID.test(id)).map((id) => id.toLowerCase());
-  return { AND: [{ ...OPEN_ACCOUNT_WHERE }, { id: { in: valid } }] };
+  return { AND: [{ ...NOT_DELETED_WHERE }, { id: { in: valid } }] };
 }
 
 export function toListed(r: ListRow): ListedUser {
