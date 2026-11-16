@@ -1,17 +1,75 @@
 VERDICT: fix
-INTERIM
 
-# Verify USERS-DASH (interim)
+# Verify USERS-DASH: POST /internal/users/list
 
-Branch under test: `wmt/USERS-DASH` at ad2e669, merge-base 3216e46. Real app, real HTTP, local Postgres 16 with the repo's migrations.
+Tested `wmt/USERS-DASH` at ad2e669 (merge-base 3216e46, confirmed). Real built app (`npm run build`, `node dist/main.js`), real HTTP, local Postgres 16 with all repo migrations. No product code or existing test changed; my attack scripts are not committed.
 
-## Findings so far
-1. **MEDIUM. A UK or Ghana number in local form, or in international form without `+`, finds nothing.** `q` = `07911 123456`, `447911123456` (UK) and `024 123 4567`, `0241234567`, `233241234567` (Ghana) all return 0 items for stored `+447911123456` and `+233241234567`. `+447911123456`, `+44 7911 123456`, `+233241234567` work. Nigerian forms all work. Cause: `searchWhere` (`src/auth/users-list.ts`, `comparablePhone` + `phoneVariants`) only knows Nigerian local forms; the util reads any other number only with its `+`. The owner's list asks for local and international form for UK and Ghana. Fix: for a digits-only `q`, also try each supported dial code with the leading 0 dropped, as exact `phone in (...)`; stays index-friendly.
-2. **LOW. A bad key does not beat a bad body.** Malformed JSON with a wrong key answers 400 "Unexpected end of JSON input"; a 3 MB body with a wrong or missing key answers 500. The global body parser (`src/main.ts`, `src/mail/mail-relay-body.ts`) runs before the guard. `users/lookup` is the same (and worse: it answers 400 "must be a UUID" to a missing key). With a valid-JSON body, no key / wrong / empty / wrong header / access token all give 401 "Invalid service key". No data leaks; the contract line "before the body is read" does not hold for bad bodies.
-3. **LOW. `q` containing a NUL character answers 500 "Could not list users."** It should be 400. Fixed text, no leak.
-4. **LOW. A database failure leaves no log line at all** (`auth.service.ts` catch is silent). Nothing leaks, but an operator cannot see the outage from this route.
+One medium (phone forms) means `fix`. Everything else is low. The fix is small.
 
-## Held so far
-Nine fields exactly, no hash or other column in the raw JSON (user with every column filled). `ids`: found, missing, duplicates, non-uuid, 200 ok, 201 = 400, empty, non-array, non-string all as the contract says. Closed accounts (banned, pending_deletion, deletedAt, `deleted:` phone) left out of list and `ids`; suspended and `released:` accounts kept, phone shown as "". Cursor walk with 50 accounts added and 10 closed mid-walk: no duplicate, no untouched account missed. Tampered cursors 400. `limit` 0, 101, "5", 2.5, -1 all 400. `q`: names any case, "first last", whole email any case, part of email no, part of phone no, `%` `_` `\` quotes and SQL text plain. Logs: with good, bad and failing-database requests no email, phone or `q` appears in the server log or in an error body. `/users/list` (no `internal`) is 404; GET is 404. tsc clean; eslint clean on the four changed files; new spec 28/28 three times; the 5 specs covering the controller 138/138.
+## Findings
 
-Still to run: speed at 100,000 users, full jest, npm run build result, CI/deploy notes, banned-account judgement.
+### 1. MEDIUM. UK and Ghana numbers in local form, or bare international form, find nothing
+`q` of `07911 123456`, `447911123456` (stored `+447911123456`) and `024 123 4567`, `0241234567`, `233241234567` (stored `+233241234567`) all return `items: []`. These work: `+447911123456`, `+44 7911 123456`, `+233241234567`, `+233 24 123 4567`, and every Nigerian form (`0803 123 4412`, `+2348031234412`, `2348031234412`, `08031234412`, `+234-803-123-4412`, `(0803) 123-4412`, `00234 803 123 4412`).
+Cause: `searchWhere` (`src/auth/users-list.ts:158-185`, phone part) uses `comparablePhone` and `phoneVariants` (`src/common/phone.util.ts:129`, `:143`). They know Nigerian local forms only; any other number must carry its `+`. The brief asks for a UK and a Ghana number in local and international form. An admin typing a Ghana user's local number gets "no one".
+Fix: for a digits-only `q`, also try each supported dial code with a leading 0 dropped (and the bare `<dial><number>` form) as exact `phone in (...)`. Stays an index lookup on `wawu_users_phone_key`. Add specs for UK and Ghana.
+Side note, not a defect: `8031234412` (Nigerian number without the 0 or 234) finds the user. It is the whole national number, not a part; I accept it.
+
+### 2. LOW. A bad key does not beat a bad body
+Steps: `POST /internal/users/list` with `x-service-key: nope` and body `{"ids":[` gives 400 "Unexpected end of JSON input". A 3 MB body with a wrong key, or with no key, gives 500 "Internal server error" (body-parser's 413 is turned into 500 by the filter). Cause: the global `json()` parser (`src/mail/mail-relay-body.ts`, `useBodyParsers`, used by `src/main.ts:12`) runs before any guard; only `/internal/mail/send` has a key check ahead of it. `users/lookup` behaves the same, and worse: its DTO pipe answers a missing or wrong key with 400 "each value in ids must be a UUID". For a well-formed body, `list` is better than `lookup`: no key, wrong key, empty key, key in `Authorization`, a Bearer access token all give 401 "Invalid service key" and no database call. No data leaks. The brief's "before the body is read" holds only for valid JSON under 100 kb. Fix (optional, one place): extend the pre-parser key check in `useBodyParsers` to `/internal/*`.
+
+### 3. LOW. `q` with a NUL character answers 500
+`{"q":"a\u0000bc"}` gives 500 "Could not list users." (Postgres refuses NUL). Should be 400. Fixed text, no leak. Fix: reject `\u0000` in `parseListBody`.
+
+### 4. LOW. A database failure writes no log line
+With Postgres stopped, three requests (a `q`, an `ids`, a phone `q`) each gave 500 "Could not list users." and the server log gained 0 lines. Nothing leaks, but an operator cannot see the outage from this route. Fix: log a fixed line (error class name only).
+
+### 5. INFO. Speed grows with the table
+Whole table is scanned for every `q` and for the newest page (see numbers). At 100,000 rows nothing is near 300 ms. At about 1,000,000 rows expect 0.4 to 1 s. If that is ever reached: `pg_trgm` GIN indexes on `lower(first_name)`, `lower(last_name)` and an index on `(created_at desc, id desc)`. Not needed now.
+
+## Judgement: closed accounts left out (banned, pending_deletion, deleted)
+Grade: **acceptable for deleted and pending_deletion; wrong default for banned (medium-ish product risk, not a code defect, owner's call).**
+- Deleted and `deleted:<id>` phone accounts: leaving out is right; the data is erased or being erased.
+- Banned: an admin Users page is the place an admin looks for a banned person to review or unban. With this route they vanish from the list, so the admin cannot find them. Worse, the Hub fills country by `ids`; if a Hub row for a banned person exists elsewhere (reports, orders), it would show with no name or contact.
+- Pending_deletion: the person can still cancel deletion in the window; an admin may need to see them. Showing them with a `status` would be best.
+- Recommendation: return banned and pending_deletion in `ids` always, and in the list; add a `status` field only if the Hub agrees (the nine-field contract forbids it today). Until then, keep the built choice for deleted only. The change is `OPEN_ACCOUNT_WHERE` (`users-list.ts:~140`). I did not grade this as a blocker because the owner's order said "closed accounts are left out" and the builder flagged it.
+- Suspended accounts are kept (good). `released:<id>` accounts are kept with `phone: ""` (good).
+
+## Passes
+
+### V1 Diff against origin/main: passed
+Exactly five files: `docs/wmt-reports/USERS-DASH.md`, `src/auth/auth.service.ts` (+42, imports and `listUsers` only), `src/auth/internal.controller.ts` (+22, one new route), `src/auth/users-list.ts` (new), `src/auth/users-list.spec.ts` (new). 952 insertions, 0 deletions. No schema, migration, guard, existing route or test changed.
+
+### V2 Guard: passed on contract, failed on strict reading (finding 2)
+Valid-JSON body: no key, wrong, empty, key in `Authorization`, Bearer token: all 401 `{"statusCode":401,"message":"Invalid service key"}`. Malformed or huge body with a bad key: 400/500 from the body parser (finding 2, same as `lookup`). Route is `/internal/users/list` only: `/users/list` 404, GET 404; no global prefix; `InternalController` is the only controller at `internal/users`.
+
+### V3 Response: passed
+Raw JSON for a user with every column filled (hash, token ids, trust score, onboarding ref, app ids, gender, occupation, verification dates all set): keys exactly `countryCode, createdAt, email, emailVerified, firstName, id, lastName, phone, phoneVerified`. No hash, token, code, PIN, BVN or NIN (those are not selected; the Prisma `select` is `LIST_SELECT`). Not wrapped in `data` (the Hub accepts both).
+
+### V4 Behaviour: passed except finding 1 and 3
+- `ids`: found/missing mixed 2 of 4; duplicates collapsed; non-uuid just not found; 200 ids ok; 201 = 400; `[]` = 400; non-array, numbers, object = 400; upper-case uuid found; `ids` wins over bad `q`/`limit`/`cursor`; `nextCursor` null.
+- Closed accounts: banned, pending_deletion, `deletedAt`, `deleted:` phone excluded from `ids` and list; suspended and `released:` kept.
+- Walk: 120 accounts with createdAt ties, limit 7, 21 pages; after page 2 added 50 accounts, after page 3 banned 10. No duplicate; every untouched account seen exactly once.
+- Cursor: `abc`, appended char, bad uuid, huge number, `!!!`, number, object, newline-injected: all 400. `limit` 0, 101, "5", 2.5, -1: 400; 1, 100, null, 1e0: 200.
+- `q`: first part, last part, any case, "first last" and a middle part of both, whole email any case: match. Email part (`okonkwo@ex`, `@ex.test`), phone parts (`803123441`, `0803123441`, `+234803123`, `31234412`): no match. 1 char, empty, only spaces: 400; 120 ok; 121 400; number/array/object: 400. `%%`, `__`, `\\`, `' OR 1=1 --`, `'; DROP TABLE wawu_users;--`: no match, table intact. `50%`, `o'br`, `\ien`, `we_ird%@ex.test` (any case) match only their own row. `released:xyz` and `deleted:abc` match nothing. Many spaces (110) and 30 splits: 200.
+
+### V7 Logs: passed (no personal data)
+Full Nest logging on. After about 230 requests (good, bad, failing database): 0 hits in the server log for the emails, phones, `q` strings or SQL text sent; error bodies are fixed text. (Finding 4: the failure is not logged at all.)
+
+### V8 Speed, 100,000 users: passed
+Through real HTTP, median of 5 warm runs: newest 50 = 55 ms; newest 100 = 50; deep page = 16; name part = 79 (common name 66); "first last" = 105; whole email = 74; phone (0xxx or +234) = 79 / 78; no match = 67; ids of 200 = 4. Nothing over 300 ms. EXPLAIN: newest and every `q` = parallel seq scan + top-N sort, 36 ms and 107 ms; `ids` = primary-key index scan 0.06 ms. Linear in rows (finding 5).
+
+### V9 Gates: passed
+- `npx tsc --noEmit`: clean.
+- `npm run build`: exit 0 (builder had not run it).
+- eslint, no `--fix`, on the four changed source files: clean.
+- New spec x3: 28/28, 28/28, 28/28.
+- Controller specs (anonymise-phone-proof, data-export-email, two-tick-verification, pin-reset-code-email, money-check-report): 5 suites, 138/138.
+- Whole jest, once: 53 suites passed, 1 skipped; 1003 passed, 50 skipped, 0 failed.
+- `scripts/gates/run.py`: 0 fail, 48 warn; `check_baseline.py` ok; `check_deploy_in_sync.py` ok.
+- CI: `branch-checks.yml` (wmt/**) runs migrate, tsc, build and the deploy-sync check. `gates.yml` runs the gate scripts. Neither runs jest, so the 28 new tests and my real-database checks are never run by CI. `deploy.yml`: a push to `main` builds, rsyncs to the droplet, runs `deploy/deploy.sh`, restarts and probes JWKS. **A merge to main goes live by itself.** No migration in this change, so deploy is additive. `railway.json` only sets `npm run start:prod` (runs `prisma migrate deploy`).
+
+## What I could not prove
+- No call to the live service, the Hub or a real mailbox/phone; the Hub's side of the contract is untested.
+- Timings are on one scratch machine with synthetic short names, not the live table.
+- Banned-person display in the Hub I did not see; judged from the contract text only.
+- Each `q` finding was run once against my seeded rows, not exhaustively across all phone formats of every country.
