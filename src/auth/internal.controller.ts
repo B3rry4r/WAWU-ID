@@ -60,6 +60,28 @@ export class InternalController {
   }
 
   /**
+   * POST /internal/users/list
+   * Body: { ids?: string[], q?: string, cursor?: string, limit?: number }
+   *
+   * The people list for the Hub dashboard (R-142, R-143). With `ids` (1 to
+   * 200) it returns those users that exist and ignores the rest of the body.
+   * Without, every open account, newest first, paged by an opaque `cursor`
+   * (`limit` 1 to 100, default 50), optionally narrowed by `q` (name part,
+   * whole email, or whole phone number). Deleted and closed accounts are left
+   * out. Answers { items, nextCursor }. POST, like lookup, so `q` is never in a
+   * URL an access log carries; `q`, emails and phones are never logged.
+   */
+  @Post('users/list')
+  @HttpCode(HttpStatus.OK)
+  async listUsers(
+    @Body() body: unknown,
+    @Headers('x-service-key') serviceKey?: string,
+  ) {
+    this.assertServiceKey(serviceKey);
+    return this.auth.listUsers(body);
+  }
+
+  /**
    * PATCH /internal/users/:userId/verification
    * Body: { tick: 'creator' | 'professional', granted: boolean,
    *         expiresAt?: string | null }
