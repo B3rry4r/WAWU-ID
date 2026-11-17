@@ -1,9 +1,11 @@
 import {
+  getCountryCallingCode,
   isSupportedCountry,
   parsePhoneNumberFromString,
   type CountryCode,
 } from 'libphonenumber-js/max';
 import {
+  COUNTRY_CODES,
   DEFAULT_COUNTRY_CODE,
   isCountryCode,
   toCountryCode,
@@ -182,4 +184,17 @@ export function resolveCountryCode(
     return toCountryCode(sent);
   }
   return phoneCountry(phone) ?? DEFAULT_COUNTRY_CODE;
+}
+
+/**
+ * Every calling code of the countries this service supports (`COUNTRY_CODES`),
+ * digits only, each once ("234", "233", "44", "1", ...). Derived from the one
+ * country list and the phone library, not written out a second time.
+ */
+export function callingCodes(): string[] {
+  const out = new Set<string>();
+  for (const c of COUNTRY_CODES) {
+    if (isSupportedCountry(c)) out.add(getCountryCallingCode(c));
+  }
+  return [...out];
 }

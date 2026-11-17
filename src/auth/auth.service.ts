@@ -3,6 +3,8 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -10,6 +12,15 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { WawuUser } from '@prisma/client';
 import * as argon2 from 'argon2';
+import {
+  LIST_SELECT,
+  encodeCursor,
+  idsWhere,
+  pageWhere,
+  parseListBody,
+  toListed,
+  type ListUsersResult,
+} from './users-list';
 import { randomBytes, randomInt } from 'crypto';
 import { normalizeGender } from '../common/gender.util';
 import { comparablePhone, phoneVariants } from '../common/phone.util';
@@ -651,6 +662,45 @@ export class AuthService {
       verificationTier: u.verificationTier,
       verification: deriveVerification(u, now),
     }));
+  }
+
+  /**
+   * POST /internal/users/list. See users-list.ts for the rules. The database
+   * call is wrapped so that a failure is answered with fixed text: a Prisma
+   * error can carry the query it was given, and that is the caller's `q`.
+   */
+  private readonly listLog = new Logger('UsersList');
+
+  async listUsers(body: unknown): Promise<ListUsersResult> {
+    const req = parseListBody(body);
+    try {
+      if (req.kind === 'ids') {
+        const rows = await this.prisma.wawuUser.findMany({
+          where: idsWhere(req.ids),
+          select: LIST_SELECT,
+        });
+        return { items: rows.map(toListed), nextCursor: null };
+      }
+      const rows = await this.prisma.wawuUser.findMany({
+        where: pageWhere(req),
+        select: LIST_SELECT,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: req.limit + 1,
+      });
+      const page = rows.slice(0, req.limit);
+      const last = page[page.length - 1];
+      return {
+        items: page.map(toListed),
+        nextCursor: rows.length > req.limit && last ? encodeCursor(last) : null,
+      };
+    } catch (err) {
+      // One fixed line: the error's class name only. Never the query, the q or
+      // the ids, which a database error can carry in its message.
+      this.listLog.error(
+        `users/list: database call failed (${err instanceof Error ? err.constructor.name : typeof err})`,
+      );
+      throw new InternalServerErrorException('Could not list users.');
+    }
   }
 
   // ── internal: legacy tier management (X-Service-Key gated) ─────────────────
