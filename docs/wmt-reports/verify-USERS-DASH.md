@@ -1,4 +1,4 @@
-VERDICT: fix
+VERDICT: merge
 
 # Verify USERS-DASH: POST /internal/users/list
 
@@ -73,3 +73,43 @@ Through real HTTP, median of 5 warm runs: newest 50 = 55 ms; newest 100 = 50; de
 - Timings are on one scratch machine with synthetic short names, not the live table.
 - Banned-person display in the Hub I did not see; judged from the contract text only.
 - Each `q` finding was run once against my seeded rows, not exhaustively across all phone formats of every country.
+
+---
+
+# Re-check of fix round 1
+
+Tested `wmt/USERS-DASH` at 98ee1d8 (code 851c99a), built and run as before: real app, real HTTP, local Postgres 16, 100,000 seeded users. **VERDICT: merge.** Nothing medium or worse left. Finding 2 (a bad body beats a bad key) is unchanged and still low, as before; it was not in this round.
+
+## 1. Finding 1 (medium, phone forms): fixed
+- UK `07911 123456`, `07911123456`, `447911123456`, `+447911123456`, `+44 7911 123456`: find the UK user.
+- Ghana `024 123 4567`, `0241234567`, `233241234567`, `+233241234567`, `+233 24 123 4567`: find the Ghana user.
+- All eight Nigerian forms from round 0 (`0803 123 4412`, `+2348031234412`, `2348031234412`, `08031234412`, dashes, brackets, `00234 ...`) still find the user.
+- Two countries: I seeded a UK `+447911123456` and a Nigerian `+2347911123456`. `07911123456` and `07911 123 456` return both and nobody else. `7911123456` returns only the Nigerian one. `07911123457` returns nobody.
+- Parts still do not match: `803123441`, `0803123441`, `+234803123`, `31234412`, `1234567` return nobody. (`8031234412`, the whole Nigerian number without its 0, still finds the user, as before.)
+- How: a `q` of only digits and phone marks with 7 to 15 digits is searched ONLY as `phone in (...)` (`users-list.ts` `looksLikePhone`, `phoneCandidates`). The list is exact strings: the old variants, `+<digits>`, and `+<dial code><digits without the leading 0>` for each of 204 calling codes. Exact match only; no `like`, so no guessing by part of a number.
+- EXPLAIN, 100,000 rows: `Index Scan using wawu_users_phone_key`, 0.3 ms. HTTP median over 5 runs: Nigerian local 4 ms, `+234` 2 ms, bare international 2 ms, UK local 3 ms (was 78 to 79 ms before, a table scan). Other `q` kinds as before: name part 93 ms, common name 98, "first last" 85, whole email 111 (max 167), no match 94, newest page 34, deep page 17. Nothing near 300 ms.
+
+## 2. Finding 3 and 4: fixed
+- `q` with a NUL: 400 `q must be text.` (was 500).
+- Database stopped, four requests (two `q`, one phone `q`, one `ids`): each 500 "Could not list users."; server log gained exactly four lines `ERROR [UsersList] users/list: database call failed (PrismaClientKnownRequestError)`. Grep for the emails, phones, `q` and id I sent: 0 hits in log and response.
+
+## 3. Lead ruling carried out: what each account kind returns
+In `ids` and in the list alike (checked both):
+- active, suspended: returned.
+- banned: returned (was left out).
+- pending_deletion: returned (was left out).
+- `released:<id>` phone: returned, `phone` is `""`.
+- deleted (`deletedAt` set): left out.
+- `deleted:<id>` phone: left out.
+- Still the nine fields, same names (checked on the raw JSON of a user with every column filled earlier; the select and `toListed` shape are untouched). Cursor walk with 50 added and 10 closed mid-walk: no duplicate, every untouched account seen once; the 10 banned during the walk are now returned, as ruled.
+- `q` finds banned and pending_deletion people by name (`Banned`, `Pend Ing`); `Gone`, `DelPhone` find nobody.
+
+## 4. Nothing else moved
+- `git diff ad2e669 851c99a --stat`: `auth.service.ts` (+10/-1: a Logger and a catch), `users-list.ts`, `users-list.spec.ts`, and `src/common/phone.util.ts` (+15, adds `callingCodes()` and two imports; no existing function changed). Against origin/main: 6 files, 1117 added, the only removals are within the changed branch lines above; `internal.controller.ts` unchanged since round 0 (+22, one new route). `lookup` and all other routes are untouched in the diff.
+- Guard: valid-JSON body with no key, wrong, empty, key in `Authorization`, Bearer token: all 401 "Invalid service key". `/users/list` 404, GET 404.
+- `npx tsc --noEmit` clean; `npm run build` exit 0; eslint without `--fix` on the five changed source files clean; new spec 3 runs: 33/33 each; the nine suites that touch `phone` (including `phone.util`): 9 suites, 253/253; whole jest once: 53 passed, 1 skipped, 1008 passed, 50 skipped, 0 failed; gates `run.py` 0 fail (48 warn, same as before).
+
+## What I could not prove
+- I ran my own attack script again (106 of 111 checks as written); the 5 "fails" were checks written for round 0 that no longer apply or were my wrong guesses (banned now listed; `ada.okonkwo`, `8031234412`, `%_` expectations), each looked at by hand and correct.
+- Not run: the Hub, the live service. Numbers are one scratch machine, synthetic rows.
+- Phone local forms are tried against every supported calling code, so a local number that is valid in no country still returns nobody; I did not check each of the 204 codes by hand, only the UK, Ghana, Nigeria and a UK/Nigeria clash.
